@@ -10,6 +10,8 @@ from app.services.rag import RAGService
 from app.services.memoria import MemoriaService
 # [CLOUDINARY] Importar el servicio de Cloudinary que creamos
 from app.services.cloudinary import subir_imagen_desde_url
+# [WHATSAPP] Importar el servicio para enviar mensajes
+from app.services.whatsapp_sender import enviar_mensaje_whatsapp
 
 router = APIRouter(prefix="/whatsapp", tags=["whatsapp"])
 
@@ -60,6 +62,8 @@ async def webhook_whatsapp(request: Request, db: Session = Depends(get_db)):
         # Número de teléfono de la empresa (quien recibe)
         metadata = value.get("metadata", {})
         telefono_empresa = metadata.get("display_phone_number", "")
+
+        telefono_empresa = telefono_empresa.replace("+", "")
         
         if not telefono_cliente or (not texto_mensaje and not imagen_info):
             return {"status": "ok", "message": "Mensaje sin contenido"}
@@ -147,18 +151,29 @@ async def webhook_whatsapp(request: Request, db: Session = Depends(get_db)):
         db.add(mensaje_bot)
         db.commit()
         
+        # 8.5 ENVIAR RESPUESTA A WHATSAPP (NUEVO)
+        resultado_envio = enviar_mensaje_whatsapp(
+            telefono_destino=telefono_cliente,
+            mensaje=respuesta_texto
+        )
+        
+        if not resultado_envio["exito"]:
+            print(f"⚠️ Error enviando mensaje a WhatsApp: {resultado_envio['error']}")
+            if "detalles" in resultado_envio:
+                print(f"   Detalles: {resultado_envio['detalles']}")
+        
         # 9. Actualizar memoria del cliente
         memoria.actualizar_resumen(texto_mensaje, respuesta_texto)
         
-        # 10. Aquí enviarías la respuesta a WhatsApp usando la API de Meta
-        # Por ahora solo devolvemos la respuesta para pruebas
+        # 10. Ahora sí devolvemos la respuesta (aunque ya se envió por WhatsApp)
         return {
             "status": "ok",
             "respuesta": respuesta_texto,
             "cliente_id": cliente.id,
             "documentos_usados": len(documentos_relevantes),
             "tipo_mensaje": tipo_mensaje,
-            "imagen_procesada": imagen_info is not None
+            "imagen_procesada": imagen_info is not None,
+            "mensaje_enviado": resultado_envio.get("exito", False)
         }
         
     except Exception as e:

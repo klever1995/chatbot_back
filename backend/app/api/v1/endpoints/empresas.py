@@ -51,3 +51,45 @@ def obtener_empresa(empresa_id: int, db: Session = Depends(get_db)):
             detail="Empresa no encontrada"
         )
     return empresa
+
+@router.put("/{empresa_id}", response_model=Empresa)
+def actualizar_empresa(
+    empresa_id: int, 
+    empresa_data: EmpresaCreate, 
+    db: Session = Depends(get_db)
+):
+    """
+    Actualiza los datos de una empresa existente
+    """
+    # Buscar la empresa
+    empresa = db.query(EmpresaModel).filter(EmpresaModel.id == empresa_id).first()
+    
+    if not empresa:
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail="Empresa no encontrada"
+        )
+    
+    # Verificar si el nuevo teléfono ya está usado por otra empresa
+    if empresa.telefono_whatsapp != empresa_data.telefono_whatsapp:
+        telefono_existe = db.query(EmpresaModel).filter(
+            EmpresaModel.telefono_whatsapp == empresa_data.telefono_whatsapp,
+            EmpresaModel.id != empresa_id
+        ).first()
+        
+        if telefono_existe:
+            raise HTTPException(
+                status_code=status.HTTP_400_BAD_REQUEST,
+                detail="Ya existe otra empresa con este número de WhatsApp"
+            )
+    
+    # Actualizar campos
+    empresa.nombre = empresa_data.nombre
+    empresa.telefono_whatsapp = empresa_data.telefono_whatsapp
+    empresa.prompt_personalizado = empresa_data.prompt_personalizado
+    empresa.activa = empresa_data.activa
+    
+    db.commit()
+    db.refresh(empresa)
+    
+    return empresa

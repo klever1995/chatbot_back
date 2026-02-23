@@ -9,3 +9,4 @@ numpy
 pgvector
 python-multipart
 cloudinary
+requests
