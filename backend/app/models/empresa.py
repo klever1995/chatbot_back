@@ -9,7 +9,8 @@ class Empresa(Base):
     nombre = Column(String(100), nullable=False)
     telefono_whatsapp = Column(String(20), unique=True, nullable=False, index=True)
     token_api = Column(String(100), unique=True, nullable=False)
-    prompt_personalizado = Column(Text, nullable=True)  # Instrucciones especiales para el LLM
+    prompt_personalizado = Column(Text, nullable=True) 
+    telefono_dueño = Column(String(20), nullable=True)  
     activa = Column(Boolean, default=True)
     fecha_registro = Column(DateTime(timezone=True), server_default=func.now())
     fecha_actualizacion = Column(DateTime(timezone=True), onupdate=func.now())

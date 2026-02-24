@@ -83,10 +83,11 @@ def actualizar_empresa(
                 detail="Ya existe otra empresa con este número de WhatsApp"
             )
     
-    # Actualizar campos
+    # Actualizar campos (INCLUYENDO teléfono del dueño)
     empresa.nombre = empresa_data.nombre
     empresa.telefono_whatsapp = empresa_data.telefono_whatsapp
     empresa.prompt_personalizado = empresa_data.prompt_personalizado
+    empresa.telefono_dueño = empresa_data.telefono_dueño  # ← NUEVA LÍNEA
     empresa.activa = empresa_data.activa
     
     db.commit()

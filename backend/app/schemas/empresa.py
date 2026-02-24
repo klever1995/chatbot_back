@@ -6,6 +6,7 @@ class EmpresaBase(BaseModel):
     nombre: str = Field(..., max_length=100)
     telefono_whatsapp: str = Field(..., max_length=20)
     prompt_personalizado: Optional[str] = None
+    telefono_dueño: Optional[str] = Field(None, max_length=20)
     activa: Optional[bool] = True
 
 class EmpresaCreate(EmpresaBase):

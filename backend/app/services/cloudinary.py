@@ -12,7 +12,10 @@ cloudinary.config(
 )
 
 def subir_imagen_desde_url(url_imagen: str, public_id: Optional[str] = None) -> Optional[Dict]:
-   
+    """
+    Sube una imagen a Cloudinary proporcionando una URL pública.
+    Nota: No funciona con URLs protegidas de WhatsApp (requieren token).
+    """
     try:
         resultado = upload(
             url_imagen,
@@ -28,11 +31,14 @@ def subir_imagen_desde_url(url_imagen: str, public_id: Optional[str] = None) -> 
             "tamano": resultado["bytes"]
         }
     except Exception as e:
-        print(f"❌ Error subiendo imagen a Cloudinary: {e}")
+        print(f"❌ Error subiendo imagen a Cloudinary desde URL: {e}")
         return None
 
 def subir_imagen_desde_bytes(imagen_bytes: bytes, public_id: Optional[str] = None) -> Optional[Dict]:
- 
+    """
+    Sube el contenido binario (bytes) de una imagen a Cloudinary.
+    Esta es la función que usaremos para las imágenes de WhatsApp.
+    """
     try:
         resultado = upload(
             imagen_bytes,
@@ -48,10 +54,12 @@ def subir_imagen_desde_bytes(imagen_bytes: bytes, public_id: Optional[str] = Non
             "tamano": resultado["bytes"]
         }
     except Exception as e:
-        print(f"❌ Error subiendo imagen a Cloudinary: {e}")
+        print(f"❌ Error subiendo imagen a Cloudinary desde bytes: {e}")
         return None
 
 def obtener_url_imagen(public_id: str, **options) -> str:
-  
+    """
+    Genera una URL optimizada para una imagen ya subida.
+    """
     url, _ = cloudinary_url(public_id, **options)
     return url
