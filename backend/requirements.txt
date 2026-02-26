@@ -10,3 +10,5 @@ pgvector
 python-multipart
 cloudinary
 requests
+pydub
+groq
