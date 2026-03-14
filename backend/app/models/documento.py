@@ -9,6 +9,8 @@ class Documento(Base):
 
     id = Column(Integer, primary_key=True, index=True)
     empresa_id = Column(Integer, ForeignKey("empresas.id"), nullable=False)
+    # 🔥 NUEVO CAMPO: Identificador de la campaña (ej: "reposteria", "lettering")
+    campania_id = Column(String(100), nullable=True, index=True)  
     nombre = Column(String(255), nullable=False)
     hash_contenido = Column(String(64), unique=True)
     fecha_subida = Column(DateTime(timezone=True), server_default=func.now())

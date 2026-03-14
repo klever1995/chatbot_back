@@ -3,7 +3,6 @@ from sqlalchemy.orm import Session
 import os
 import datetime
 import requests
-import re
 from groq import Groq
 from app.db.base import get_db
 from app.models.empresa import Empresa
@@ -68,6 +67,7 @@ async def webhook_whatsapp(request: Request, db: Session = Depends(get_db)):
         # Detectar tipo de mensaje
         if tipo_mensaje == "text":
             texto_mensaje = msg.get("text", {}).get("body", "")
+            print(f"📝 Texto recibido: '{texto_mensaje}'")
         elif tipo_mensaje == "image":
             imagen_data = msg.get("image", {})
             imagen_id = imagen_data.get("id")
@@ -84,20 +84,46 @@ async def webhook_whatsapp(request: Request, db: Session = Depends(get_db)):
             audio_url = audio_data.get("url")
             if audio_url:
                 texto_mensaje = "🎤 [El cliente envió un audio]"
-        # 👇 NUEVO: DETECTAR RESPUESTA DE BOTONES INTERACTIVOS
         elif tipo_mensaje == "interactive":
             interactive_data = msg.get("interactive", {})
             if interactive_data.get("type") == "button_reply":
                 button_reply = interactive_data.get("button_reply", {})
                 texto_mensaje = f"🔘 [Respuesta de botón: {button_reply.get('title')}]"
-                # Guardamos el callback_data para procesarlo después
                 msg["callback_data"] = button_reply.get("id")
+        
+        # Detectar campaña desde el primer mensaje (versión mejorada con campaña=)
+        campania_detectada = None
+        if tipo_mensaje == "text" and texto_mensaje:
+            print(f"🔍 Evaluando si es campaña: '{texto_mensaje}'")
+            
+            # Formato 1: campaña_reposteria (el original)
+            if texto_mensaje.startswith("campaña_"):
+                print("✅ ¡Empieza con 'campaña_'!")
+                partes = texto_mensaje.split("_", 1)
+                print(f"📌 Partes: {partes}")
+                if len(partes) > 1:
+                    campania_detectada = partes[1].strip().lower()
+                    print(f"🎯 CAMPAÑA DETECTADA (formato antiguo): '{campania_detectada}'")
+                    texto_mensaje = ""
+            
+            # Formato 2: campaña=reposteria (formato profesional recomendado)
+            elif "campaña=" in texto_mensaje:
+                print("✅ ¡Contiene 'campaña='!")
+                import re
+                match = re.search(r'campaña=(\w+)', texto_mensaje)
+                if match:
+                    campania_detectada = match.group(1).strip().lower()
+                    print(f"🎯 CAMPAÑA DETECTADA (formato profesional): '{campania_detectada}'")
+                    # Limpiamos el mensaje quitando el parámetro
+                    texto_mensaje = re.sub(r'campaña=\w+\s*', '', texto_mensaje).strip()
+            else:
+                print("❌ No es un mensaje de campaña")
         
         metadata = value.get("metadata", {})
         telefono_empresa = metadata.get("display_phone_number", "")
         telefono_empresa = telefono_empresa.replace("+", "")
         
-        if not telefono_cliente or (not texto_mensaje and not imagen_info and not audio_url):
+        if not telefono_cliente or (not texto_mensaje and not imagen_info and not audio_url and not campania_detectada):
             return {"status": "ok", "message": "Mensaje sin contenido"}
         
         empresa = db.query(Empresa).filter(
@@ -109,15 +135,21 @@ async def webhook_whatsapp(request: Request, db: Session = Depends(get_db)):
             print(f"⚠️ Empresa no encontrada para teléfono: {telefono_empresa}")
             return {"status": "ok", "message": "Empresa no identificada"}
         
+        # Buscar cliente existente
+        print(f"🔍 Buscando cliente con teléfono: {telefono_cliente}")
         cliente = db.query(Cliente).filter(
             Cliente.empresa_id == empresa.id,
             Cliente.telefono == telefono_cliente
         ).first()
         
-        # 👇 PROCESAR RESPUESTAS DEL DUEÑO (tanto texto como botones)
+        if cliente:
+            print(f"👤 Cliente existente encontrado. Datos actuales: {cliente.datos_estructurados}")
+        else:
+            print("👤 Cliente no existe, se creará uno nuevo")
+        
+        # PROCESAR RESPUESTAS DEL DUEÑO
         if empresa.telefono_dueño and telefono_cliente == empresa.telefono_dueño:
             
-            # Procesar respuesta de botones (callback_data)
             if tipo_mensaje == "interactive" and msg.get("callback_data"):
                 callback_id = msg.get("callback_data")
                 
@@ -142,19 +174,34 @@ async def webhook_whatsapp(request: Request, db: Session = Depends(get_db)):
                                 mensaje_confirmacion = "✅ ¡Buenas noticias! Tu pago ha sido verificado y ya tienes acceso al curso. 😊"
                                 enviar_mensaje_whatsapp(cliente_pendiente.telefono, mensaje_confirmacion)
                                 
-                                mensaje_material = (
-                                    "✅ ¡Gracias por tu paciencia! Tu material de LETTERING ya está listo. Aquí tienes el acceso para descargarlo:\n\n"
-                                    "[Acceso al Pack de Lettering](https://drive.google.com/drive/folders/1o1281qJnphKE3ClYHSHw1vNg6U?usp=shar)\n\n"
-                                    "Incluye:\n"
-                                    "- Guías y libros digitales\n"
-                                    "- Plantillas de práctica\n"
-                                    "- Cuadernillo de caligrafía\n"
-                                    "- Técnicas y secretos para mejorar tus diseños\n\n"
-                                    "Todo es digital (PDF) y tendrás acceso de por vida. Si necesitas ayuda con algo o tienes dudas, no dudes en escribirme. ¡Gracias por tu compra y disfruta de tu aventura creativa! 😊"
-                                )
+                                try:
+                                    campania_cliente = None
+                                    if cliente_pendiente.datos_estructurados:
+                                        campania_cliente = cliente_pendiente.datos_estructurados.get("campania_activa")
+                                    print(f"📦 Entregando producto para campaña: {campania_cliente}")
+                                    
+                                    rag_entrega = RAGService(
+                                        db=db,
+                                        empresa_id=empresa.id,
+                                        cliente_id=cliente_pendiente.id,
+                                        campania_id=campania_cliente
+                                    )
+                                    
+                                    mensaje_material = rag_entrega.obtener_mensaje_entrega()
+                                    
+                                    if not mensaje_material and campania_cliente:
+                                        print(f"⚠️ Usando mensaje legacy para campaña {campania_cliente}")
+                                        mensaje_material = rag_entrega.obtener_mensaje_entrega_legacy(campania_cliente)
+                                    elif not mensaje_material:
+                                        mensaje_material = "✅ ¡Gracias por tu compra! En breve recibirás el acceso al material."
+                                    
+                                except Exception as e:
+                                    print(f"❌ Error obteniendo mensaje de entrega: {e}")
+                                    mensaje_material = "✅ ¡Gracias por tu compra! En breve recibirás el acceso al material."
+                                
                                 enviar_mensaje_whatsapp(cliente_pendiente.telefono, mensaje_material)
                                 
-                            else:  # RECHAZAR
+                            else:
                                 datos["ultimo_comprobante"]["estado_pago"] = "rechazado"
                                 datos["ultimo_comprobante"]["fecha_rechazo"] = str(datetime.datetime.now())
                                 mensaje_rechazo = "❌ Hubo un problema con tu comprobante. Por favor, contacta a un asesor para más detalles."
@@ -165,65 +212,42 @@ async def webhook_whatsapp(request: Request, db: Session = Depends(get_db)):
                             
                             return {"status": "ok", "message": f"Pago {accion} para cliente {cliente_id}"}
             
-            # Procesar comandos de texto (respaldo, pero ya no se usa)
-            match = re.search(r"(APROBAR|RECHAZAR)\s+(\d+)", texto_mensaje.upper())
-            if match:
-                accion = match.group(1)
-                cliente_id = int(match.group(2))
-                
-                cliente_pendiente = db.query(Cliente).filter(
-                    Cliente.id == cliente_id,
-                    Cliente.empresa_id == empresa.id
-                ).first()
-                
-                if cliente_pendiente and cliente_pendiente.datos_estructurados:
-                    datos = cliente_pendiente.datos_estructurados
-                    if datos.get("ultimo_comprobante", {}).get("estado_pago") == "pendiente":
-                        
-                        if accion == "APROBAR":
-                            datos["ultimo_comprobante"]["estado_pago"] = "confirmado"
-                            datos["ultimo_comprobante"]["fecha_confirmacion"] = str(datetime.datetime.now())
-                            
-                            mensaje_confirmacion = "✅ ¡Buenas noticias! Tu pago ha sido verificado y ya tienes acceso al curso. 😊"
-                            enviar_mensaje_whatsapp(cliente_pendiente.telefono, mensaje_confirmacion)
-                            
-                            mensaje_material = (
-                                "✅ ¡Gracias por tu paciencia! Tu material de LETTERING ya está listo. Aquí tienes el acceso para descargarlo:\n\n"
-                                "[Acceso al Pack de Lettering](https://drive.google.com/drive/folders/1o1281qJnphKE3ClYHSHw1vNg6U?usp=shar)\n\n"
-                                "Incluye:\n"
-                                "- Guías y libros digitales\n"
-                                "- Plantillas de práctica\n"
-                                "- Cuadernillo de caligrafía\n"
-                                "- Técnicas y secretos para mejorar tus diseños\n\n"
-                                "Todo es digital (PDF) y tendrás acceso de por vida. Si necesitas ayuda con algo o tienes dudas, no dudes en escribirme. ¡Gracias por tu compra y disfruta de tu aventura creativa! 😊"
-                            )
-                            enviar_mensaje_whatsapp(cliente_pendiente.telefono, mensaje_material)
-                            
-                        else:  # RECHAZAR
-                            datos["ultimo_comprobante"]["estado_pago"] = "rechazado"
-                            datos["ultimo_comprobante"]["fecha_rechazo"] = str(datetime.datetime.now())
-                            mensaje_rechazo = "❌ Hubo un problema con tu comprobante. Por favor, contacta a un asesor para más detalles."
-                            enviar_mensaje_whatsapp(cliente_pendiente.telefono, mensaje_rechazo)
-                        
-                        cliente_pendiente.datos_estructurados = datos
-                        db.commit()
-                        
-                        return {"status": "ok", "message": f"Pago {accion} para cliente {cliente_id}"}
-            
-            return {"status": "ok", "message": "Comando no reconocido o cliente sin pago pendiente"}
+            return {"status": "ok", "message": "Formato no reconocido o cliente sin pago pendiente"}
         
-        # Crear cliente si no existe
+        # Guardar/Actualizar cliente con campaña
         if not cliente:
+            # Cliente nuevo
+            datos_iniciales = {}
+            if campania_detectada:
+                datos_iniciales["campania_activa"] = campania_detectada
+                print(f"✅ GUARDANDO: Campaña {campania_detectada} en cliente NUEVO {telefono_cliente}")
+            
             cliente = Cliente(
                 empresa_id=empresa.id,
                 telefono=telefono_cliente,
                 nombre=msg.get("profile", {}).get("name", ""),
                 resumen="Cliente nuevo",
-                datos_estructurados={}
+                datos_estructurados=datos_iniciales
             )
             db.add(cliente)
             db.commit()
             db.refresh(cliente)
+            print(f"🆔 Cliente creado con ID: {cliente.id}, datos: {cliente.datos_estructurados}")
+        else:
+            # Cliente existente
+            if campania_detectada:
+                print(f"🔄 ACTUALIZANDO: Cliente existente. Campaña detectada: {campania_detectada}")
+                
+                # 🔥 CORRECCIÓN CRÍTICA: Reasignar el diccionario completo para que SQLAlchemy detecte el cambio
+                datos = cliente.datos_estructurados or {}
+                datos["campania_activa"] = campania_detectada
+                cliente.datos_estructurados = datos  # Reasignación completa
+                
+                db.commit()
+                db.refresh(cliente)
+                print(f"✅ Campaña actualizada. Datos ahora: {cliente.datos_estructurados}")
+            else:
+                print(f"ℹ️ Cliente existente sin nueva campaña. Datos actuales: {cliente.datos_estructurados}")
         
         # Procesar audio si existe
         if audio_url:
@@ -267,7 +291,6 @@ async def webhook_whatsapp(request: Request, db: Session = Depends(get_db)):
                         cliente.datos_estructurados = datos_cliente
                         db.commit()
                         
-                        # Enviar notificación al dueño con botones
                         if empresa.telefono_dueño:
                             texto_cabecera = (
                                 f"🔔 *NUEVO COMPROBANTE*\n\n"
@@ -286,22 +309,52 @@ async def webhook_whatsapp(request: Request, db: Session = Depends(get_db)):
             except Exception as e:
                 print(f"❌ Error procesando imagen: {e}")
         
-        # Guardar mensaje del cliente
-        mensaje_cliente = Conversacion(
-            cliente_id=cliente.id,
-            mensaje=texto_mensaje,
-            emisor=TipoEmisor.CLIENTE
-        )
-        db.add(mensaje_cliente)
-        db.commit()
+        # Guardar mensaje del cliente (solo si hay contenido)
+        if texto_mensaje:
+            mensaje_cliente = Conversacion(
+                cliente_id=cliente.id,
+                mensaje=texto_mensaje,
+                emisor=TipoEmisor.CLIENTE
+            )
+            db.add(mensaje_cliente)
+            db.commit()
+            print(f"💬 Mensaje guardado: {texto_mensaje[:50]}...")
+        else:
+            print("⏸️ No hay mensaje de texto, esperando siguiente interacción")
+            return {"status": "ok", "message": "Parámetro de campaña recibido, esperando mensaje del cliente"}
+        
+        # Verificar campaña antes de RAG
+        campania_activa = None
+        if cliente.datos_estructurados:
+            campania_activa = cliente.datos_estructurados.get("campania_activa")
+            print(f"🎯 CAMPAÑA ACTIVA PARA RAG: '{campania_activa}'")
+            
+            # 🔥 MEJORA: Validar que haya campaña activa
+            if not campania_activa:
+                print("⚠️ Cliente sin campaña activa. Usando fallback.")
+                # Aquí podrías implementar la lógica para preguntar al cliente
+        else:
+            print("⚠️ No hay datos_estructurados en cliente")
         
         # Inicializar servicios
-        rag = RAGService(db, empresa.id, cliente.id)
+        rag = RAGService(
+            db=db, 
+            empresa_id=empresa.id, 
+            cliente_id=cliente.id,
+            campania_id=campania_activa
+        )
         memoria = MemoriaService(db, cliente.id)
         
-        # RAG y generación de respuesta
+        # Buscar documentos
+        print(f"🔍 Buscando documentos para: '{texto_mensaje}' con campaña '{campania_activa}'")
         resumen_cliente = memoria.obtener_resumen()
         documentos_relevantes = rag.buscar_similares(texto_mensaje, top_k=3)
+        
+        print(f"📚 Documentos encontrados: {len(documentos_relevantes)}")
+        for i, doc in enumerate(documentos_relevantes):
+            print(f"  {i+1}. Documento: {doc.get('documento', 'N/A')} - Similitud: {doc.get('similitud', 0):.4f}")
+            print(f"     Texto: {doc.get('texto', '')[:100]}...")
+        
         contexto = "\n\n".join([doc["texto"] for doc in documentos_relevantes])
         
         respuesta_texto = rag.generar_respuesta_llm(
@@ -337,6 +390,8 @@ async def webhook_whatsapp(request: Request, db: Session = Depends(get_db)):
         
     except Exception as e:
         print(f"❌ Error procesando webhook: {str(e)}")
+        import traceback
+        traceback.print_exc()
         return {"status": "error", "message": str(e)}
 
 @router.get("/webhook")

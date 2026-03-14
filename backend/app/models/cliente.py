@@ -1,6 +1,7 @@
 from sqlalchemy import Column, Integer, String, DateTime, Text, JSON, ForeignKey
 from sqlalchemy.sql import func
 from sqlalchemy.orm import relationship
+from sqlalchemy.ext.mutable import MutableDict  # 🔥 IMPORTAR ESTO
 from app.db.base import Base
 
 class Cliente(Base):
@@ -11,7 +12,8 @@ class Cliente(Base):
     telefono = Column(String(20), nullable=False, index=True)
     nombre = Column(String(100), nullable=True)
     resumen = Column(Text, nullable=True)  # Resumen generado por LLM de las conversaciones
-    datos_estructurados = Column(JSON, nullable=True)  # Ej: {"producto_interes": "tazas", "tipo_cliente": "corporativo"}
+    # 🔥 CAMBIO CRÍTICO: Usar MutableDict para que SQLAlchemy detecte cambios internos
+    datos_estructurados = Column(MutableDict.as_mutable(JSON), nullable=True)  # Ej: {"producto_interes": "tazas", "tipo_cliente": "corporativo"}
     sentimiento_ultimo = Column(String(20), default="neutral")
     ultima_interaccion = Column(DateTime(timezone=True), onupdate=func.now())
     fecha_registro = Column(DateTime(timezone=True), server_default=func.now())
