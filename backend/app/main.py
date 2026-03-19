@@ -1,8 +1,8 @@
 from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
 from app.db.base import engine, Base
-from app.api.v1.endpoints import empresas, documentos, whatsapp 
-from app.models import empresa, cliente, conversacion, documento 
+from app.api.v1.endpoints import empresas, documentos, whatsapp, auth
+from app.models import empresa, cliente, conversacion, documento, usuario
 
 # Crear las tablas en la base de datos
 Base.metadata.create_all(bind=engine)
@@ -22,6 +22,7 @@ app.add_middleware(
 app.include_router(empresas.router, prefix="/api/v1")
 app.include_router(documentos.router, prefix="/api/v1") 
 app.include_router(whatsapp.router, prefix="/api/v1")
+app.include_router(auth.router, prefix="/api/v1")
 
 @app.get("/")
 def read_root():
