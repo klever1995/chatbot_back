@@ -8,7 +8,6 @@ class EstadoVenta(str, enum.Enum):
     PENDIENTE = "pendiente"
     CONFIRMADA = "confirmada"
     RECHAZADA = "rechazada"
-    ENTREGADA = "entregada"
 
 class Venta(Base):
     __tablename__ = "ventas"
@@ -21,7 +20,7 @@ class Venta(Base):
     cantidad = Column(Integer, nullable=False, default=1)
     precio_unitario = Column(Float, nullable=False)
     monto_total = Column(Float, nullable=False)  # cantidad * precio_unitario
-    estado = Column(Enum(EstadoVenta), default=EstadoVenta.PENDIENTE)
+    estado = Column(Enum(EstadoVenta, values_callable=lambda obj: [e.value for e in obj]), default=EstadoVenta.PENDIENTE)
     fecha_venta = Column(DateTime(timezone=True), server_default=func.now())
     fecha_actualizacion = Column(DateTime(timezone=True), onupdate=func.now())
     comprobante_url = Column(String(500), nullable=True)  # URL del comprobante en Cloudinary

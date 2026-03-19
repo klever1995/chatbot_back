@@ -1,6 +1,6 @@
-from fastapi import APIRouter, Depends, HTTPException, UploadFile, File, status
+from fastapi import APIRouter, Depends, HTTPException, UploadFile, File, status, Form
 from sqlalchemy.orm import Session
-from typing import List
+from typing import List, Optional
 import os
 import tempfile
 
@@ -15,6 +15,9 @@ router = APIRouter(prefix="/documentos", tags=["documentos"])
 async def subir_documento(
     empresa_id: int,
     archivo: UploadFile = File(...),
+    campania_id: Optional[str] = Form(None),
+    mensaje_entrega: Optional[str] = Form(None),
+    precio: Optional[float] = Form(None),  # 🔥 NUEVO: Precio del producto
     db: Session = Depends(get_db)
 ):
     # Verificar que la empresa existe
@@ -36,14 +39,23 @@ async def subir_documento(
         # Leer contenido del archivo
         contenido = await archivo.read()
         
-        # Procesar documento con RAG
+        # Procesar documento con RAG (pasando todos los parámetros)
         rag_service = RAGService(db, empresa_id)
-        documento = rag_service.guardar_documento(archivo.filename, contenido)
+        documento = rag_service.guardar_documento(
+            archivo.filename, 
+            contenido, 
+            campania_id,
+            mensaje_entrega,
+            precio  # 🔥 Pasar el precio
+        )
         
         return {
             "mensaje": "Documento procesado correctamente",
             "documento_id": documento.id,
             "nombre": documento.nombre,
+            "campania_id": documento.campania_id,
+            "mensaje_entrega": documento.mensaje_entrega,
+            "precio": documento.precio,  # 🔥 Incluir en respuesta
             "chunks": len(documento.chunks) if documento.chunks else 0
         }
     
@@ -69,10 +81,119 @@ def listar_documentos(
             "id": doc.id,
             "nombre": doc.nombre,
             "fecha_subida": doc.fecha_subida,
+            "campania_id": doc.campania_id,
+            "mensaje_entrega": doc.mensaje_entrega,
+            "precio": doc.precio,  # 🔥 Mostrar precio
             "total_chunks": len(doc.chunks) if doc.chunks else 0
         }
         for doc in documentos
     ]
+
+@router.get("/{documento_id}")
+def obtener_documento(
+    documento_id: int,
+    db: Session = Depends(get_db)
+):
+    """Obtener detalles completos de un documento específico"""
+    documento = db.query(Documento).filter(Documento.id == documento_id).first()
+    if not documento:
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail="Documento no encontrado"
+        )
+    
+    return {
+        "id": documento.id,
+        "nombre": documento.nombre,
+        "campania_id": documento.campania_id,
+        "mensaje_entrega": documento.mensaje_entrega,
+        "precio": documento.precio,  # 🔥 Incluir precio
+        "fecha_subida": documento.fecha_subida,
+        "total_chunks": len(documento.chunks) if documento.chunks else 0,
+        "chunks": [
+            {
+                "indice": chunk.indice,
+                "texto_preview": chunk.texto[:200] + "..." if len(chunk.texto) > 200 else chunk.texto
+            }
+            for chunk in documento.chunks[:5]
+        ]
+    }
+
+@router.put("/{documento_id}/campania")
+def actualizar_campania_documento(
+    documento_id: int,
+    campania_id: str = Form(...),
+    db: Session = Depends(get_db)
+):
+    """Actualizar la campaña de un documento existente"""
+    documento = db.query(Documento).filter(Documento.id == documento_id).first()
+    if not documento:
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail="Documento no encontrado"
+        )
+    
+    documento.campania_id = campania_id
+    db.commit()
+    db.refresh(documento)
+    
+    return {
+        "mensaje": "Campaña actualizada correctamente",
+        "documento_id": documento.id,
+        "campania_id": documento.campania_id,
+        "mensaje_entrega": documento.mensaje_entrega,
+        "precio": documento.precio  # 🔥 Incluir precio
+    }
+
+@router.put("/{documento_id}/mensaje")
+def actualizar_mensaje_entrega(
+    documento_id: int,
+    mensaje_entrega: str = Form(...),
+    db: Session = Depends(get_db)
+):
+    """Actualizar el mensaje de entrega de un documento existente"""
+    documento = db.query(Documento).filter(Documento.id == documento_id).first()
+    if not documento:
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail="Documento no encontrado"
+        )
+    
+    documento.mensaje_entrega = mensaje_entrega
+    db.commit()
+    db.refresh(documento)
+    
+    return {
+        "mensaje": "Mensaje de entrega actualizado correctamente",
+        "documento_id": documento.id,
+        "mensaje_entrega": documento.mensaje_entrega,
+        "precio": documento.precio  # 🔥 Incluir precio
+    }
+
+@router.put("/{documento_id}/precio")
+def actualizar_precio_documento(
+    documento_id: int,
+    precio: float = Form(...),  # 🔥 NUEVO: Endpoint para actualizar solo el precio
+    db: Session = Depends(get_db)
+):
+    """Actualizar el precio de un documento existente"""
+    documento = db.query(Documento).filter(Documento.id == documento_id).first()
+    if not documento:
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail="Documento no encontrado"
+        )
+    
+    documento.precio = precio
+    db.commit()
+    db.refresh(documento)
+    
+    return {
+        "mensaje": "Precio actualizado correctamente",
+        "documento_id": documento.id,
+        "precio": documento.precio,
+        "campania_id": documento.campania_id
+    }
 
 @router.delete("/{documento_id}")
 def eliminar_documento(

@@ -7,6 +7,8 @@ from groq import Groq
 from app.db.base import get_db
 from app.models.empresa import Empresa
 from app.models.cliente import Cliente
+from app.models.documento import Documento
+from app.models.ventas import Venta, EstadoVenta  # 🔥 IMPORTAR MODELO VENTA
 from app.models.conversacion import Conversacion, TipoEmisor
 from app.services.rag import RAGService
 from app.services.memoria import MemoriaService
@@ -91,30 +93,29 @@ async def webhook_whatsapp(request: Request, db: Session = Depends(get_db)):
                 texto_mensaje = f"🔘 [Respuesta de botón: {button_reply.get('title')}]"
                 msg["callback_data"] = button_reply.get("id")
         
-        # Detectar campaña desde el primer mensaje (versión mejorada con campaña=)
+        # Detectar campaña desde el primer mensaje
         campania_detectada = None
         if tipo_mensaje == "text" and texto_mensaje:
             print(f"🔍 Evaluando si es campaña: '{texto_mensaje}'")
             
-            # Formato 1: campaña_reposteria (el original)
+            # Formato 1: campaña_reposteria
             if texto_mensaje.startswith("campaña_"):
                 print("✅ ¡Empieza con 'campaña_'!")
                 partes = texto_mensaje.split("_", 1)
                 print(f"📌 Partes: {partes}")
                 if len(partes) > 1:
                     campania_detectada = partes[1].strip().lower()
-                    print(f"🎯 CAMPAÑA DETECTADA (formato antiguo): '{campania_detectada}'")
+                    print(f"🎯 CAMPAÑA DETECTADA: '{campania_detectada}'")
                     texto_mensaje = ""
             
-            # Formato 2: campaña=reposteria (formato profesional recomendado)
+            # Formato 2: campaña=reposteria
             elif "campaña=" in texto_mensaje:
                 print("✅ ¡Contiene 'campaña='!")
                 import re
                 match = re.search(r'campaña=(\w+)', texto_mensaje)
                 if match:
                     campania_detectada = match.group(1).strip().lower()
-                    print(f"🎯 CAMPAÑA DETECTADA (formato profesional): '{campania_detectada}'")
-                    # Limpiamos el mensaje quitando el parámetro
+                    print(f"🎯 CAMPAÑA DETECTADA: '{campania_detectada}'")
                     texto_mensaje = re.sub(r'campaña=\w+\s*', '', texto_mensaje).strip()
             else:
                 print("❌ No es un mensaje de campaña")
@@ -174,34 +175,60 @@ async def webhook_whatsapp(request: Request, db: Session = Depends(get_db)):
                                 mensaje_confirmacion = "✅ ¡Buenas noticias! Tu pago ha sido verificado y ya tienes acceso al curso. 😊"
                                 enviar_mensaje_whatsapp(cliente_pendiente.telefono, mensaje_confirmacion)
                                 
-                                try:
-                                    campania_cliente = None
-                                    if cliente_pendiente.datos_estructurados:
-                                        campania_cliente = cliente_pendiente.datos_estructurados.get("campania_activa")
-                                    print(f"📦 Entregando producto para campaña: {campania_cliente}")
+                                # 🔥 Obtener campaña activa del cliente
+                                campania_cliente = None
+                                if cliente_pendiente.datos_estructurados:
+                                    campania_cliente = cliente_pendiente.datos_estructurados.get("campania_activa")
+                                
+                                print(f"📦 Buscando mensaje de entrega para campaña: {campania_cliente}")
+                                
+                                # Consultar documento para obtener mensaje_entrega y precio
+                                documento = db.query(Documento).filter(
+                                    Documento.empresa_id == empresa.id,
+                                    Documento.campania_id == campania_cliente
+                                ).first()
+                                
+                                if documento and documento.mensaje_entrega:
+                                    mensaje_material = documento.mensaje_entrega
+                                    print(f"📦 Mensaje de entrega obtenido desde BD para campaña {campania_cliente}")
                                     
-                                    rag_entrega = RAGService(
-                                        db=db,
+                                    # 🔥 REGISTRAR LA VENTA
+                                    cantidad = 1  # Por ahora asumimos cantidad 1
+                                    precio_unitario = documento.precio if documento.precio else 0
+                                    monto_total = cantidad * precio_unitario
+                                    
+                                    # 🔥 DEBUG: Ver qué valor tiene EstadoVenta.CONFIRMADA
+                                    print(f"🔍 DEBUG - EstadoVenta.CONFIRMADA: {EstadoVenta.CONFIRMADA}")
+                                    print(f"🔍 DEBUG - Tipo: {type(EstadoVenta.CONFIRMADA)}")
+                                    print(f"🔍 DEBUG - Valor como string: {str(EstadoVenta.CONFIRMADA)}")
+
+                                    # Y luego, para forzar el valor correcto, usá:
+                                    estado_valor = "confirmada"  # Forzamos el string en minúsculas
+                                    print(f"🔍 DEBUG - Valor forzado: {estado_valor}")
+
+                                    nueva_venta = Venta(
                                         empresa_id=empresa.id,
                                         cliente_id=cliente_pendiente.id,
-                                        campania_id=campania_cliente
+                                        campania_id=campania_cliente,
+                                        producto_nombre=documento.nombre.replace('.pdf', ''),
+                                        cantidad=cantidad,
+                                        precio_unitario=precio_unitario,
+                                        monto_total=monto_total,
+                                        estado=estado_valor,  # Usamos la variable forzada
+                                        comprobante_url=datos.get("ultimo_comprobante", {}).get("url"),
+                                        notas=f"Venta aprobada el {datetime.datetime.now()}"
                                     )
+                                    db.add(nueva_venta)
+                                    print(f"💰 Venta registrada: {campania_cliente} - ${monto_total}")
                                     
-                                    mensaje_material = rag_entrega.obtener_mensaje_entrega()
-                                    
-                                    if not mensaje_material and campania_cliente:
-                                        print(f"⚠️ Usando mensaje legacy para campaña {campania_cliente}")
-                                        mensaje_material = rag_entrega.obtener_mensaje_entrega_legacy(campania_cliente)
-                                    elif not mensaje_material:
-                                        mensaje_material = "✅ ¡Gracias por tu compra! En breve recibirás el acceso al material."
-                                    
-                                except Exception as e:
-                                    print(f"❌ Error obteniendo mensaje de entrega: {e}")
-                                    mensaje_material = "✅ ¡Gracias por tu compra! En breve recibirás el acceso al material."
+                                else:
+                                    print(f"⚠️ No se encontró mensaje de entrega para campaña {campania_cliente}, usando legacy")
+                                    rag_temp = RAGService(db, empresa.id, cliente_pendiente.id, campania_cliente)
+                                    mensaje_material = rag_temp.obtener_mensaje_entrega_legacy(campania_cliente)
                                 
                                 enviar_mensaje_whatsapp(cliente_pendiente.telefono, mensaje_material)
                                 
-                            else:
+                            else:  # RECHAZAR
                                 datos["ultimo_comprobante"]["estado_pago"] = "rechazado"
                                 datos["ultimo_comprobante"]["fecha_rechazo"] = str(datetime.datetime.now())
                                 mensaje_rechazo = "❌ Hubo un problema con tu comprobante. Por favor, contacta a un asesor para más detalles."
@@ -233,19 +260,32 @@ async def webhook_whatsapp(request: Request, db: Session = Depends(get_db)):
             db.commit()
             db.refresh(cliente)
             print(f"🆔 Cliente creado con ID: {cliente.id}, datos: {cliente.datos_estructurados}")
+            
+            if campania_detectada:
+                conversaciones_eliminadas = db.query(Conversacion).filter(
+                    Conversacion.cliente_id == cliente.id
+                ).delete(synchronize_session=False)
+                db.commit()
+                print(f"🧹 Historial limpiado para cliente nuevo: {conversaciones_eliminadas} mensajes eliminados")
+                
         else:
-            # Cliente existente
             if campania_detectada:
                 print(f"🔄 ACTUALIZANDO: Cliente existente. Campaña detectada: {campania_detectada}")
                 
-                # 🔥 CORRECCIÓN CRÍTICA: Reasignar el diccionario completo para que SQLAlchemy detecte el cambio
                 datos = cliente.datos_estructurados or {}
                 datos["campania_activa"] = campania_detectada
-                cliente.datos_estructurados = datos  # Reasignación completa
+                cliente.datos_estructurados = datos
+                
+                conversaciones_eliminadas = db.query(Conversacion).filter(
+                    Conversacion.cliente_id == cliente.id
+                ).delete(synchronize_session=False)
+                
+                cliente.resumen = f"Cliente nuevo - campaña {campania_detectada}"
                 
                 db.commit()
                 db.refresh(cliente)
                 print(f"✅ Campaña actualizada. Datos ahora: {cliente.datos_estructurados}")
+                print(f"🧹 Historial limpiado: {conversaciones_eliminadas} mensajes eliminados para cliente {cliente.id}")
             else:
                 print(f"ℹ️ Cliente existente sin nueva campaña. Datos actuales: {cliente.datos_estructurados}")
         
@@ -329,10 +369,8 @@ async def webhook_whatsapp(request: Request, db: Session = Depends(get_db)):
             campania_activa = cliente.datos_estructurados.get("campania_activa")
             print(f"🎯 CAMPAÑA ACTIVA PARA RAG: '{campania_activa}'")
             
-            # 🔥 MEJORA: Validar que haya campaña activa
             if not campania_activa:
                 print("⚠️ Cliente sin campaña activa. Usando fallback.")
-                # Aquí podrías implementar la lógica para preguntar al cliente
         else:
             print("⚠️ No hay datos_estructurados en cliente")
         
