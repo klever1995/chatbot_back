@@ -1,5 +1,5 @@
 from fastapi import APIRouter, Depends, HTTPException, Query, status
-from sqlalchemy.orm import Session
+from sqlalchemy.orm import Session, joinedload
 from sqlalchemy import and_
 from typing import List, Optional
 from datetime import datetime
@@ -61,7 +61,7 @@ def crear_venta(
     
     return nueva_venta
 
-@router.get("/", response_model=List[VentaResponse])
+@router.get("/", response_model=List[dict])
 def listar_ventas(
     empresa_id: Optional[int] = Query(None, description="Filtrar por empresa"),
     cliente_id: Optional[int] = Query(None, description="Filtrar por cliente"),
@@ -74,9 +74,10 @@ def listar_ventas(
     db: Session = Depends(get_db)
 ):
     """
-    Listar ventas con filtros opcionales
+    Listar ventas con filtros opcionales e información del cliente
     """
-    query = db.query(Venta)
+    # Usar joinedload para cargar los datos del cliente en la misma consulta
+    query = db.query(Venta).options(joinedload(Venta.cliente))
     
     # Aplicar filtros
     if empresa_id:
@@ -98,7 +99,29 @@ def listar_ventas(
     # Paginar
     ventas = query.offset(skip).limit(limit).all()
     
-    return ventas
+    # Construir respuesta incluyendo datos del cliente
+    resultado = []
+    for venta in ventas:
+        venta_dict = {
+            "id": venta.id,
+            "empresa_id": venta.empresa_id,
+            "cliente_id": venta.cliente_id,
+            "cliente_nombre": venta.cliente.nombre if venta.cliente else None,
+            "cliente_telefono": venta.cliente.telefono if venta.cliente else None,
+            "campania_id": venta.campania_id,
+            "producto_nombre": venta.producto_nombre,
+            "cantidad": venta.cantidad,
+            "precio_unitario": venta.precio_unitario,
+            "monto_total": venta.monto_total,
+            "estado": venta.estado,
+            "comprobante_url": venta.comprobante_url,
+            "notas": venta.notas,
+            "fecha_venta": venta.fecha_venta.isoformat() if venta.fecha_venta else None,
+            "fecha_actualizacion": venta.fecha_actualizacion.isoformat() if venta.fecha_actualizacion else None
+        }
+        resultado.append(venta_dict)
+    
+    return resultado
 
 @router.get("/{venta_id}", response_model=VentaResponse)
 def obtener_venta(

@@ -10,8 +10,12 @@ class Usuario(Base):
     empresa_id = Column(Integer, ForeignKey("empresas.id"), nullable=False)
     email = Column(String(255), unique=True, nullable=False, index=True)
     nombre = Column(String(100), nullable=False)
-    password_hash = Column(String(255), nullable=False)  # Guardar hash, no contraseña en texto plano
-    rol = Column(String(50), nullable=False, default="dueño")  # dueño, admin, empleado, etc.
+    password_hash = Column(String(255), nullable=True)  # Ahora puede ser nulo (para usuarios sociales)
+    google_id = Column(String(255), unique=True, nullable=True)  # ID de Google
+    facebook_id = Column(String(255), unique=True, nullable=True)  # ID de Facebook
+    foto_url = Column(String(500), nullable=True)  # URL de foto de perfil
+    auth_provider = Column(String(50), nullable=False, default='local')  # local, google, facebook
+    rol = Column(String(50), nullable=False, default="dueño")
     activo = Column(Boolean, default=True)
     ultimo_acceso = Column(DateTime(timezone=True), nullable=True)
     fecha_registro = Column(DateTime(timezone=True), server_default=func.now())
