@@ -14,6 +14,7 @@ from app.services.rag import RAGService
 from app.services.memoria import MemoriaService
 from app.services.cloudinary import subir_imagen_desde_bytes
 from app.services.whatsapp_sender import enviar_mensaje_whatsapp, enviar_mensaje_con_botones
+from app.socket_manager import emitir_nueva_venta
 
 router = APIRouter(prefix="/whatsapp", tags=["whatsapp"])
 
@@ -214,11 +215,35 @@ async def webhook_whatsapp(request: Request, db: Session = Depends(get_db)):
                                         cantidad=cantidad,
                                         precio_unitario=precio_unitario,
                                         monto_total=monto_total,
-                                        estado=estado_valor,  # Usamos la variable forzada
+                                        estado=estado_valor,
                                         comprobante_url=datos.get("ultimo_comprobante", {}).get("url"),
                                         notas=f"Venta aprobada el {datetime.datetime.now()}"
                                     )
                                     db.add(nueva_venta)
+                                    db.commit()  # ← IMPORTANTE: commit antes de emitir
+                                    db.refresh(nueva_venta)
+                                    
+                                    # 🔥 EMITIR EVENTO WEBSOCKET PARA ACTUALIZAR DASHBOARD EN TIEMPO REAL
+                                    venta_dict = {
+                                        "id": nueva_venta.id,
+                                        "empresa_id": nueva_venta.empresa_id,
+                                        "cliente_id": nueva_venta.cliente_id,
+                                        "cliente_nombre": cliente_pendiente.nombre,
+                                        "cliente_telefono": cliente_pendiente.telefono,
+                                        "campania_id": nueva_venta.campania_id,
+                                        "producto_nombre": nueva_venta.producto_nombre,
+                                        "cantidad": nueva_venta.cantidad,
+                                        "precio_unitario": nueva_venta.precio_unitario,
+                                        "monto_total": nueva_venta.monto_total,
+                                        "estado": nueva_venta.estado,
+                                        "comprobante_url": nueva_venta.comprobante_url,
+                                        "notas": nueva_venta.notas,
+                                        "fecha_venta": nueva_venta.fecha_venta.isoformat() if nueva_venta.fecha_venta else None,
+                                        "fecha_actualizacion": nueva_venta.fecha_actualizacion.isoformat() if nueva_venta.fecha_actualizacion else None
+                                    }
+                                    await emitir_nueva_venta(venta_dict, empresa.id)
+                                    print(f"📡 Evento WebSocket emitido para venta ID: {nueva_venta.id}")
+                                    
                                     print(f"💰 Venta registrada: {campania_cliente} - ${monto_total}")
                                     
                                 else:
