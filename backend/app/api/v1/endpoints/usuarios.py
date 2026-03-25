@@ -53,7 +53,14 @@ async def get_current_user(token: str = Depends(oauth2_scheme), db: Session = De
         usuario_id: int = payload.get("sub")
         if usuario_id is None:
             raise credentials_exception
-        token_data = TokenData(usuario_id=usuario_id, empresa_id=payload.get("empresa_id"), email=payload.get("email"), rol=payload.get("rol"))
+        token_data = TokenData(
+            usuario_id=usuario_id,
+            empresa_id=payload.get("empresa_id"),
+            email=payload.get("email"),
+            rol=payload.get("rol"),
+            empresa_telefono=payload.get("empresa_telefono"),  # 🔥 NUEVO
+            empresa_nombre=payload.get("empresa_nombre")       # 🔥 NUEVO
+        )
     except JWTError:
         raise credentials_exception
     usuario = db.query(Usuario).filter(Usuario.id == token_data.usuario_id).first()
@@ -125,18 +132,28 @@ def login(
             detail="Usuario inactivo"
         )
     
+    # 🔥 OBTENER DATOS DE LA EMPRESA
+    empresa = db.query(Empresa).filter(Empresa.id == usuario.empresa_id).first()
+    if not empresa:
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail="Empresa no encontrada"
+        )
+    
     # Actualizar último acceso
     usuario.ultimo_acceso = datetime.now()
     db.commit()
     
-    # Crear token
+    # Crear token con datos de la empresa
     access_token_expires = timedelta(minutes=ACCESS_TOKEN_EXPIRE_MINUTES)
     access_token = create_access_token(
         data={
             "sub": str(usuario.id),
             "empresa_id": usuario.empresa_id,
             "email": usuario.email,
-            "rol": usuario.rol
+            "rol": usuario.rol,
+            "empresa_telefono": empresa.telefono_whatsapp,  # 🔥 NUEVO
+            "empresa_nombre": empresa.nombre                # 🔥 NUEVO
         },
         expires_delta=access_token_expires
     )
@@ -169,7 +186,7 @@ def obtener_usuario(
 ):
     usuario = db.query(Usuario).filter(
         Usuario.id == usuario_id,
-        Usuario.empresa_id == current_user.empresa_id  # Asegurar que sea de la misma empresa
+        Usuario.empresa_id == current_user.empresa_id
     ).first()
     
     if not usuario:

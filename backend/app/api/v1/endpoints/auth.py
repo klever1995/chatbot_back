@@ -1,9 +1,10 @@
 from fastapi import APIRouter, Depends, HTTPException, status
 from sqlalchemy.orm import Session
 from datetime import timedelta
-from pydantic import BaseModel  # <-- NUEVO
+from pydantic import BaseModel
 from app.db.base import get_db
 from app.models.usuarios import Usuario
+from app.models.empresa import Empresa  # 🔥 NUEVO IMPORT
 from app.schemas.usuarios import Token
 from app.services.auth_google import verify_google_token
 from app.api.v1.endpoints.usuarios import create_access_token, ACCESS_TOKEN_EXPIRE_MINUTES
@@ -12,7 +13,7 @@ import logging
 router = APIRouter(prefix="/auth", tags=["autenticación"])
 logger = logging.getLogger(__name__)
 
-# NUEVO: Modelo para recibir el token en el body
+# Modelo para recibir el token en el body
 class GoogleAuthRequest(BaseModel):
     credential: str
 
@@ -37,7 +38,7 @@ def get_or_create_user_google(db: Session, google_data: dict) -> Usuario:
             empresa_id=1,  # ⚠️ IMPORTANTE: Definir cómo asignar empresa
             rol="empleado",  # Rol por defecto
             activo=True,
-            password_hash=None  # No tiene contraseña
+            password_hash=None
         )
         db.add(user)
         db.commit()
@@ -50,7 +51,6 @@ def get_or_create_user_google(db: Session, google_data: dict) -> Usuario:
         if not user.google_id:
             user.google_id = google_data["google_id"]
         if user.auth_provider == "local":
-            # Si ya existía como local, ahora también tendrá Google
             user.auth_provider = "google"
         db.commit()
         db.refresh(user)
@@ -60,7 +60,7 @@ def get_or_create_user_google(db: Session, google_data: dict) -> Usuario:
 
 @router.post("/google", response_model=Token)
 async def login_google(
-    request: GoogleAuthRequest,  # <-- CAMBIADO: ahora recibe el body
+    request: GoogleAuthRequest,
     db: Session = Depends(get_db)
 ):
     """
@@ -69,19 +69,29 @@ async def login_google(
     """
     try:
         # Verificar token de Google
-        google_data = verify_google_token(request.credential)  # <-- CAMBIADO
+        google_data = verify_google_token(request.credential)
         
         # Obtener o crear usuario
         user = get_or_create_user_google(db, google_data)
         
-        # Crear token JWT para tu app
+        # 🔥 OBTENER DATOS DE LA EMPRESA
+        empresa = db.query(Empresa).filter(Empresa.id == user.empresa_id).first()
+        if not empresa:
+            raise HTTPException(
+                status_code=status.HTTP_404_NOT_FOUND,
+                detail="Empresa no encontrada"
+            )
+        
+        # Crear token JWT para tu app con datos de la empresa
         access_token_expires = timedelta(minutes=ACCESS_TOKEN_EXPIRE_MINUTES)
         access_token = create_access_token(
             data={
                 "sub": str(user.id),
                 "empresa_id": user.empresa_id,
                 "email": user.email,
-                "rol": user.rol
+                "rol": user.rol,
+                "empresa_telefono": empresa.telefono_whatsapp,  # 🔥 NUEVO
+                "empresa_nombre": empresa.nombre                # 🔥 NUEVO
             },
             expires_delta=access_token_expires
         )
