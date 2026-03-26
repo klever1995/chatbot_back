@@ -111,18 +111,39 @@ class RAGService:
     def guardar_documento(self, nombre_archivo: str, contenido_bytes: bytes, campania_id: Optional[str] = None, mensaje_entrega: Optional[str] = None, precio: Optional[float] = None):
         """Procesa y guarda un documento en la base de datos vectorial"""
         from app.models.documento import Documento, ChunkDocumento
+        import re
+        import random
+        import string
+        
+        # 🔥 GENERAR IDENTIFICADOR AUTOMÁTICO SI NO VIENE
+        if not campania_id or not campania_id.strip():
+            # Extraer nombre base sin extensión
+            nombre_base = os.path.splitext(nombre_archivo)[0]
+            # Normalizar: minúsculas, espacios a guiones bajos, eliminar caracteres especiales
+            nombre_normalizado = nombre_base.lower().strip()
+            nombre_normalizado = re.sub(r'[^a-z0-9_]', '_', nombre_normalizado)
+            nombre_normalizado = re.sub(r'_+', '_', nombre_normalizado).strip('_')
+            
+            # Generar código aleatorio de 4 caracteres (letras minúsculas y números)
+            codigo_corto = ''.join(random.choices(string.ascii_lowercase + string.digits, k=4))
+            
+            if nombre_normalizado:
+                campania_id = f"{nombre_normalizado}_{codigo_corto}"
+            else:
+                campania_id = f"campania_{codigo_corto}"
+            print(f"🔑 Campaña generada automáticamente en RAG: {campania_id}")
         
         # Extraer texto
         texto = self.extraer_texto_pdf(contenido_bytes)
         
-        # Crear registro del documento (guardamos campaña, mensaje de entrega Y PRECIO)
+        # Crear registro del documento
         doc = Documento(
             empresa_id=self.empresa_id,
             nombre=nombre_archivo,
             hash_contenido=hashlib.md5(contenido_bytes).hexdigest(),
             campania_id=campania_id,
             mensaje_entrega=mensaje_entrega,
-            precio=precio  # 👈 NUEVO: guardamos el precio
+            precio=precio
         )
         self.db.add(doc)
         self.db.flush()
