@@ -8,7 +8,7 @@ from app.db.base import get_db
 from app.models.empresa import Empresa
 from app.models.cliente import Cliente
 from app.models.documento import Documento
-from app.models.ventas import Venta, EstadoVenta  # 🔥 IMPORTAR MODELO VENTA
+from app.models.ventas import Venta, EstadoVenta
 from app.models.conversacion import Conversacion, TipoEmisor
 from app.services.rag import RAGService
 from app.services.memoria import MemoriaService
@@ -18,12 +18,12 @@ from app.socket_manager import emitir_nueva_venta
 
 router = APIRouter(prefix="/whatsapp", tags=["whatsapp"])
 
-def transcribir_audio(url_audio: str) -> str:
+def transcribir_audio(url_audio: str, groq_api_key: str, whatsapp_token: str) -> str:
     """Transcribe audio usando Groq Whisper desde URL directa"""
     try:
-        client = Groq(api_key=os.getenv("GROQ_API_KEY"))
+        client = Groq(api_key=groq_api_key)
         
-        headers = {"Authorization": f"Bearer {os.getenv('WHATSAPP_TOKEN')}"}
+        headers = {"Authorization": f"Bearer {whatsapp_token}"}
         response = requests.get(url_audio, headers=headers)
         
         if response.status_code != 200:
@@ -60,7 +60,44 @@ async def webhook_whatsapp(request: Request, db: Session = Depends(get_db)):
             return {"status": "ok", "message": "Sin mensajes"}
         
         msg = messages[0]
+        
+        # SOLUCIÓN: Validación de timestamp para ignorar mensajes antiguos (más de 30 segundos)
+        timestamp_msg = int(msg.get("timestamp", 0))
+        timestamp_actual = int(datetime.datetime.now().timestamp())
+        if timestamp_actual - timestamp_msg > 30:
+            print(f"⏰ Mensaje antiguo ignorado: timestamp={timestamp_msg}, actual={timestamp_actual}")
+            return {"status": "ok", "message": "Mensaje antiguo ignorado"}
+        
         telefono_cliente = msg.get("from")
+        
+        # 🔥 IDENTIFICAR EMPRESA POR PHONE_NUMBER_ID O DISPLAY_PHONE_NUMBER
+        metadata = value.get("metadata", {})
+        phone_number_id = metadata.get("phone_number_id")
+        telefono_empresa = metadata.get("display_phone_number", "")
+        telefono_empresa = telefono_empresa.replace("+", "")
+        
+        # Buscar empresa por phone_number_id o por telefono_whatsapp
+        empresa = None
+        if phone_number_id:
+            empresa = db.query(Empresa).filter(
+                Empresa.phone_number_id == phone_number_id,
+                Empresa.activa == True
+            ).first()
+        
+        if not empresa and telefono_empresa:
+            empresa = db.query(Empresa).filter(
+                Empresa.telefono_whatsapp == telefono_empresa,
+                Empresa.activa == True
+            ).first()
+        
+        if not empresa:
+            print(f"⚠️ Empresa no encontrada para phone_number_id: {phone_number_id} o teléfono: {telefono_empresa}")
+            return {"status": "ok", "message": "Empresa no identificada"}
+        
+        # 🔥 EXTRAER CREDENCIALES DE LA EMPRESA
+        whatsapp_token = empresa.whatsapp_token
+        groq_api_key = empresa.groq_api_key
+        phone_number_id = empresa.phone_number_id
         
         tipo_mensaje = msg.get("type", "text")
         texto_mensaje = ""
@@ -99,17 +136,14 @@ async def webhook_whatsapp(request: Request, db: Session = Depends(get_db)):
         if tipo_mensaje == "text" and texto_mensaje:
             print(f"🔍 Evaluando si es campaña: '{texto_mensaje}'")
             
-            # Formato 1: campaña_reposteria
             if texto_mensaje.startswith("campaña_"):
                 print("✅ ¡Empieza con 'campaña_'!")
                 partes = texto_mensaje.split("_", 1)
-                print(f"📌 Partes: {partes}")
                 if len(partes) > 1:
                     campania_detectada = partes[1].strip().lower()
                     print(f"🎯 CAMPAÑA DETECTADA: '{campania_detectada}'")
                     texto_mensaje = ""
             
-            # Formato 2: campaña=reposteria
             elif "campaña=" in texto_mensaje:
                 print("✅ ¡Contiene 'campaña='!")
                 import re
@@ -121,21 +155,8 @@ async def webhook_whatsapp(request: Request, db: Session = Depends(get_db)):
             else:
                 print("❌ No es un mensaje de campaña")
         
-        metadata = value.get("metadata", {})
-        telefono_empresa = metadata.get("display_phone_number", "")
-        telefono_empresa = telefono_empresa.replace("+", "")
-        
         if not telefono_cliente or (not texto_mensaje and not imagen_info and not audio_url and not campania_detectada):
             return {"status": "ok", "message": "Mensaje sin contenido"}
-        
-        empresa = db.query(Empresa).filter(
-            Empresa.telefono_whatsapp == telefono_empresa,
-            Empresa.activa == True
-        ).first()
-        
-        if not empresa:
-            print(f"⚠️ Empresa no encontrada para teléfono: {telefono_empresa}")
-            return {"status": "ok", "message": "Empresa no identificada"}
         
         # Buscar cliente existente
         print(f"🔍 Buscando cliente con teléfono: {telefono_cliente}")
@@ -174,16 +195,19 @@ async def webhook_whatsapp(request: Request, db: Session = Depends(get_db)):
                                 datos["ultimo_comprobante"]["fecha_confirmacion"] = str(datetime.datetime.now())
                                 
                                 mensaje_confirmacion = "✅ ¡Buenas noticias! Tu pago ha sido verificado y ya tienes acceso al curso. 😊"
-                                enviar_mensaje_whatsapp(cliente_pendiente.telefono, mensaje_confirmacion)
+                                await enviar_mensaje_whatsapp(
+                                    telefono_destino=cliente_pendiente.telefono,
+                                    mensaje=mensaje_confirmacion,
+                                    token=whatsapp_token,
+                                    phone_number_id=phone_number_id
+                                )
                                 
-                                # 🔥 Obtener campaña activa del cliente
                                 campania_cliente = None
                                 if cliente_pendiente.datos_estructurados:
                                     campania_cliente = cliente_pendiente.datos_estructurados.get("campania_activa")
                                 
                                 print(f"📦 Buscando mensaje de entrega para campaña: {campania_cliente}")
                                 
-                                # Consultar documento para obtener mensaje_entrega y precio
                                 documento = db.query(Documento).filter(
                                     Documento.empresa_id == empresa.id,
                                     Documento.campania_id == campania_cliente
@@ -193,19 +217,10 @@ async def webhook_whatsapp(request: Request, db: Session = Depends(get_db)):
                                     mensaje_material = documento.mensaje_entrega
                                     print(f"📦 Mensaje de entrega obtenido desde BD para campaña {campania_cliente}")
                                     
-                                    # 🔥 REGISTRAR LA VENTA
-                                    cantidad = 1  # Por ahora asumimos cantidad 1
+                                    cantidad = 1
                                     precio_unitario = documento.precio if documento.precio else 0
                                     monto_total = cantidad * precio_unitario
-                                    
-                                    # 🔥 DEBUG: Ver qué valor tiene EstadoVenta.CONFIRMADA
-                                    print(f"🔍 DEBUG - EstadoVenta.CONFIRMADA: {EstadoVenta.CONFIRMADA}")
-                                    print(f"🔍 DEBUG - Tipo: {type(EstadoVenta.CONFIRMADA)}")
-                                    print(f"🔍 DEBUG - Valor como string: {str(EstadoVenta.CONFIRMADA)}")
-
-                                    # Y luego, para forzar el valor correcto, usá:
-                                    estado_valor = "confirmada"  # Forzamos el string en minúsculas
-                                    print(f"🔍 DEBUG - Valor forzado: {estado_valor}")
+                                    estado_valor = "confirmada"
 
                                     nueva_venta = Venta(
                                         empresa_id=empresa.id,
@@ -220,10 +235,9 @@ async def webhook_whatsapp(request: Request, db: Session = Depends(get_db)):
                                         notas=f"Venta aprobada el {datetime.datetime.now()}"
                                     )
                                     db.add(nueva_venta)
-                                    db.commit()  # ← IMPORTANTE: commit antes de emitir
+                                    db.commit()
                                     db.refresh(nueva_venta)
                                     
-                                    # 🔥 EMITIR EVENTO WEBSOCKET PARA ACTUALIZAR DASHBOARD EN TIEMPO REAL
                                     venta_dict = {
                                         "id": nueva_venta.id,
                                         "empresa_id": nueva_venta.empresa_id,
@@ -243,7 +257,6 @@ async def webhook_whatsapp(request: Request, db: Session = Depends(get_db)):
                                     }
                                     await emitir_nueva_venta(venta_dict, empresa.id)
                                     print(f"📡 Evento WebSocket emitido para venta ID: {nueva_venta.id}")
-                                    
                                     print(f"💰 Venta registrada: {campania_cliente} - ${monto_total}")
                                     
                                 else:
@@ -251,13 +264,23 @@ async def webhook_whatsapp(request: Request, db: Session = Depends(get_db)):
                                     rag_temp = RAGService(db, empresa.id, cliente_pendiente.id, campania_cliente)
                                     mensaje_material = rag_temp.obtener_mensaje_entrega_legacy(campania_cliente)
                                 
-                                enviar_mensaje_whatsapp(cliente_pendiente.telefono, mensaje_material)
+                                await enviar_mensaje_whatsapp(
+                                    telefono_destino=cliente_pendiente.telefono,
+                                    mensaje=mensaje_material,
+                                    token=whatsapp_token,
+                                    phone_number_id=phone_number_id
+                                )
                                 
                             else:  # RECHAZAR
                                 datos["ultimo_comprobante"]["estado_pago"] = "rechazado"
                                 datos["ultimo_comprobante"]["fecha_rechazo"] = str(datetime.datetime.now())
                                 mensaje_rechazo = "❌ Hubo un problema con tu comprobante. Por favor, contacta a un asesor para más detalles."
-                                enviar_mensaje_whatsapp(cliente_pendiente.telefono, mensaje_rechazo)
+                                await enviar_mensaje_whatsapp(
+                                    telefono_destino=cliente_pendiente.telefono,
+                                    mensaje=mensaje_rechazo,
+                                    token=whatsapp_token,
+                                    phone_number_id=phone_number_id
+                                )
                             
                             cliente_pendiente.datos_estructurados = datos
                             db.commit()
@@ -268,7 +291,6 @@ async def webhook_whatsapp(request: Request, db: Session = Depends(get_db)):
         
         # Guardar/Actualizar cliente con campaña
         if not cliente:
-            # Cliente nuevo
             datos_iniciales = {}
             if campania_detectada:
                 datos_iniciales["campania_activa"] = campania_detectada
@@ -317,7 +339,7 @@ async def webhook_whatsapp(request: Request, db: Session = Depends(get_db)):
         # Procesar audio si existe
         if audio_url:
             try:
-                transcripcion = transcribir_audio(audio_url)
+                transcripcion = transcribir_audio(audio_url, groq_api_key, whatsapp_token)
                 texto_mensaje = f"🎤 [Audio transcrito]: {transcripcion}"
                 print(f"📝 Transcripción: {transcripcion}")
             except Exception as e:
@@ -329,7 +351,6 @@ async def webhook_whatsapp(request: Request, db: Session = Depends(get_db)):
         if imagen_info:
             try:
                 url_imagen_whatsapp = imagen_info.get("url")
-                whatsapp_token = os.getenv("WHATSAPP_TOKEN")
                 
                 if not url_imagen_whatsapp:
                     raise Exception("No se recibió URL de la imagen")
@@ -340,7 +361,10 @@ async def webhook_whatsapp(request: Request, db: Session = Depends(get_db)):
                 if response.status_code == 200:
                     public_id_gen = f"comprobante_{cliente.id}_{int(datetime.datetime.now().timestamp())}"
                     resultado_cloudinary = subir_imagen_desde_bytes(
-                        response.content, 
+                        response.content,
+                        cloud_name=empresa.cloudinary_cloud_name,
+                        api_key=empresa.cloudinary_api_key,
+                        api_secret=empresa.cloudinary_api_secret,
                         public_id=public_id_gen
                     )
                     
@@ -363,10 +387,12 @@ async def webhook_whatsapp(request: Request, db: Session = Depends(get_db)):
                                 f"*Teléfono:* {cliente.telefono}\n"
                                 f"*Comprobante:* {url_comprobante}"
                             )
-                            enviar_mensaje_con_botones(
+                            await enviar_mensaje_con_botones(
                                 telefono_destino=empresa.telefono_dueño,
                                 texto_cabecera=texto_cabecera,
-                                cliente_id=cliente.id
+                                cliente_id=cliente.id,
+                                token=whatsapp_token,
+                                phone_number_id=phone_number_id
                             )
                 else:
                     print(f"❌ Falló descarga de Meta: {response.status_code}")
@@ -441,10 +467,13 @@ async def webhook_whatsapp(request: Request, db: Session = Depends(get_db)):
         db.commit()
         
         # Enviar respuesta al cliente
-        enviar_mensaje_whatsapp(
+        resultado = await enviar_mensaje_whatsapp(
             telefono_destino=telefono_cliente,
-            mensaje=respuesta_texto
+            mensaje=respuesta_texto,
+            token=whatsapp_token,
+            phone_number_id=phone_number_id
         )
+        print(f"📤 RESULTADO ENVÍO: {resultado}")
         
         # Actualizar memoria
         memoria.actualizar_resumen(texto_mensaje, respuesta_texto)
@@ -467,6 +496,8 @@ async def verificar_webhook(request: Request):
     token = params.get("hub.verify_token")
     challenge = params.get("hub.challenge")
     
+    # Nota: El verify_token también debería venir de la empresa, pero este endpoint es solo para verificación inicial
+    # Puedes usar un token global para la verificación inicial
     verify_token = os.getenv("WHATSAPP_VERIFY_TOKEN", "mi_token_secreto")
     
     if mode == "subscribe" and token == verify_token:

@@ -1,22 +1,31 @@
-import os
 import cloudinary
 from cloudinary.uploader import upload
 from cloudinary.utils import cloudinary_url
 from typing import Optional, Dict
 
-# Configuración de Cloudinary para gestión de imágenes y archivos multimedia
-cloudinary.config(
-    cloud_name=os.getenv("CLOUDINARY_CLOUD_NAME"),
-    api_key=os.getenv("CLOUDINARY_API_KEY"),
-    api_secret=os.getenv("CLOUDINARY_API_SECRET")
-)
+def configurar_cloudinary(cloud_name: str, api_key: str, api_secret: str):
+    """
+    Configura Cloudinary con las credenciales de una empresa específica.
+    """
+    cloudinary.config(
+        cloud_name=cloud_name,
+        api_key=api_key,
+        api_secret=api_secret
+    )
 
-def subir_imagen_desde_url(url_imagen: str, public_id: Optional[str] = None) -> Optional[Dict]:
+def subir_imagen_desde_url(
+    url_imagen: str,
+    cloud_name: str,
+    api_key: str,
+    api_secret: str,
+    public_id: Optional[str] = None
+) -> Optional[Dict]:
     """
     Sube una imagen a Cloudinary proporcionando una URL pública.
     Nota: No funciona con URLs protegidas de WhatsApp (requieren token).
     """
     try:
+        configurar_cloudinary(cloud_name, api_key, api_secret)
         resultado = upload(
             url_imagen,
             public_id=public_id,
@@ -34,12 +43,19 @@ def subir_imagen_desde_url(url_imagen: str, public_id: Optional[str] = None) -> 
         print(f"❌ Error subiendo imagen a Cloudinary desde URL: {e}")
         return None
 
-def subir_imagen_desde_bytes(imagen_bytes: bytes, public_id: Optional[str] = None) -> Optional[Dict]:
+def subir_imagen_desde_bytes(
+    imagen_bytes: bytes,
+    cloud_name: str,
+    api_key: str,
+    api_secret: str,
+    public_id: Optional[str] = None
+) -> Optional[Dict]:
     """
     Sube el contenido binario (bytes) de una imagen a Cloudinary.
     Esta es la función que usaremos para las imágenes de WhatsApp.
     """
     try:
+        configurar_cloudinary(cloud_name, api_key, api_secret)
         resultado = upload(
             imagen_bytes,
             public_id=public_id,
@@ -57,9 +73,16 @@ def subir_imagen_desde_bytes(imagen_bytes: bytes, public_id: Optional[str] = Non
         print(f"❌ Error subiendo imagen a Cloudinary desde bytes: {e}")
         return None
 
-def obtener_url_imagen(public_id: str, **options) -> str:
+def obtener_url_imagen(
+    public_id: str,
+    cloud_name: str,
+    api_key: str,
+    api_secret: str,
+    **options
+) -> str:
     """
     Genera una URL optimizada para una imagen ya subida.
     """
+    configurar_cloudinary(cloud_name, api_key, api_secret)
     url, _ = cloudinary_url(public_id, **options)
     return url

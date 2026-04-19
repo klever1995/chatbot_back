@@ -3,19 +3,11 @@ from typing import List, Dict, Any, Optional
 import numpy as np
 from sqlalchemy.orm import Session
 from sqlalchemy import func, select
-from openai import AzureOpenAI
+from openai import OpenAI
 from PyPDF2 import PdfReader
 from io import BytesIO
 import hashlib
-
-# Inicializar cliente de Azure OpenAI
-client = AzureOpenAI(
-    azure_endpoint=os.getenv("AZURE_OPENAI_ENDPOINT"),
-    api_key=os.getenv("AZURE_OPENAI_KEY"),
-    api_version=os.getenv("OPENAI_API_VERSION", "2024-08-01-preview")
-)
-
-AZURE_EMBEDDING_DEPLOYMENT = os.getenv("AZURE_EMBEDDING_DEPLOYMENT", "text-embedding-ada-002")
+from app.models.empresa import Empresa
 
 class RAGService:
     def __init__(self, db: Session, empresa_id: int, cliente_id: int = None, campania_id: Optional[str] = None):
@@ -23,6 +15,21 @@ class RAGService:
         self.empresa_id = empresa_id
         self.cliente_id = cliente_id
         self.campania_id = campania_id
+        
+        # 🔥 OBTENER LA EMPRESA DE LA BASE DE DATOS PARA SUS CREDENCIALES
+        self.empresa = db.query(Empresa).filter(Empresa.id == empresa_id).first()
+        if not self.empresa:
+            raise ValueError(f"Empresa con ID {empresa_id} no encontrada")
+        
+        # 🔥 INICIALIZAR CLIENTE DE OPENAI CON LA API KEY DE LA EMPRESA
+        self.client = OpenAI(
+            api_key=self.empresa.openai_api_key,
+            base_url=self.empresa.openai_api_base if self.empresa.openai_api_base else None
+        )
+        
+        # 🔥 MODELOS CONFIGURABLES POR EMPRESA
+        self.embedding_model = self.empresa.openai_embedding_model or "text-embedding-ada-002"
+        self.chat_model = self.empresa.openai_chat_model or "gpt-4o"
     
     def obtener_historial_reciente(self, limite: int = 5) -> str:
         """Obtiene los últimos mensajes de la conversación actual"""
@@ -65,15 +72,15 @@ class RAGService:
         return chunks
     
     def generar_embedding(self, texto: str) -> List[float]:
-        """Genera embedding usando Azure OpenAI"""
-        respuesta = client.embeddings.create(
-            model=AZURE_EMBEDDING_DEPLOYMENT,
+        """Genera embedding usando el modelo configurado de OpenAI"""
+        respuesta = self.client.embeddings.create(
+            model=self.embedding_model,
             input=texto
         )
         return respuesta.data[0].embedding
     
     def generar_respuesta_llm(self, consulta: str, contexto: str, resumen_cliente: str = "") -> str:
-        """Genera respuesta usando GPT-4o de Azure con historial de conversación"""
+        """Genera respuesta usando el modelo configurado de OpenAI con historial de conversación"""
         
         historial = self.obtener_historial_reciente()
         
@@ -97,8 +104,8 @@ class RAGService:
         Si no sabes algo, sugiere contactar a un asesor humano.
         Respondé como una persona normal en WhatsApp, sin usar asteriscos, guiones ni ningún símbolo raro. Texto plano siempre."""
         
-        respuesta = client.chat.completions.create(
-            model=os.getenv("AZURE_OPENAI_DEPLOYMENT", "gpt-4o"),
+        respuesta = self.client.chat.completions.create(
+            model=self.chat_model,
             messages=[
                 {"role": "system", "content": system_prompt},
                 {"role": "user", "content": consulta}
@@ -115,16 +122,13 @@ class RAGService:
         import random
         import string
         
-        # 🔥 GENERAR IDENTIFICADOR AUTOMÁTICO SI NO VIENE
+        # GENERAR IDENTIFICADOR AUTOMÁTICO SI NO VIENE
         if not campania_id or not campania_id.strip():
-            # Extraer nombre base sin extensión
             nombre_base = os.path.splitext(nombre_archivo)[0]
-            # Normalizar: minúsculas, espacios a guiones bajos, eliminar caracteres especiales
             nombre_normalizado = nombre_base.lower().strip()
             nombre_normalizado = re.sub(r'[^a-z0-9_]', '_', nombre_normalizado)
             nombre_normalizado = re.sub(r'_+', '_', nombre_normalizado).strip('_')
             
-            # Generar código aleatorio de 4 caracteres (letras minúsculas y números)
             codigo_corto = ''.join(random.choices(string.ascii_lowercase + string.digits, k=4))
             
             if nombre_normalizado:

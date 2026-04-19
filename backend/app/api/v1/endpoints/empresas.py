@@ -5,7 +5,7 @@ import secrets
 
 from app.db.base import get_db
 from app.models.empresa import Empresa as EmpresaModel
-from app.schemas.empresa import Empresa, EmpresaCreate
+from app.schemas.empresa import Empresa, EmpresaCreate, EmpresaUpdate
 
 router = APIRouter(prefix="/empresas", tags=["empresas"])
 
@@ -25,10 +25,25 @@ def crear_empresa(empresa: EmpresaCreate, db: Session = Depends(get_db)):
     # Generar token único para la empresa
     token_api = secrets.token_urlsafe(32)
     
-    # Crear nueva empresa
+    # Crear nueva empresa con todos los campos
     nueva_empresa = EmpresaModel(
-        **empresa.model_dump(),
-        token_api=token_api
+        nombre=empresa.nombre,
+        telefono_whatsapp=empresa.telefono_whatsapp,
+        prompt_personalizado=empresa.prompt_personalizado,
+        telefono_dueño=empresa.telefono_dueño,
+        activa=empresa.activa,
+        token_api=token_api,
+        whatsapp_token=empresa.whatsapp_token,
+        phone_number_id=empresa.phone_number_id,
+        verify_token=empresa.verify_token,
+        openai_api_key=empresa.openai_api_key,
+        openai_embedding_model=empresa.openai_embedding_model,
+        openai_chat_model=empresa.openai_chat_model,
+        openai_api_base=empresa.openai_api_base,
+        groq_api_key=empresa.groq_api_key,
+        cloudinary_cloud_name=empresa.cloudinary_cloud_name,
+        cloudinary_api_key=empresa.cloudinary_api_key,
+        cloudinary_api_secret=empresa.cloudinary_api_secret
     )
     
     db.add(nueva_empresa)
@@ -55,7 +70,7 @@ def obtener_empresa(empresa_id: int, db: Session = Depends(get_db)):
 @router.put("/{empresa_id}", response_model=Empresa)
 def actualizar_empresa(
     empresa_id: int, 
-    empresa_data: EmpresaCreate, 
+    empresa_data: EmpresaUpdate, 
     db: Session = Depends(get_db)
 ):
     """
@@ -71,7 +86,7 @@ def actualizar_empresa(
         )
     
     # Verificar si el nuevo teléfono ya está usado por otra empresa
-    if empresa.telefono_whatsapp != empresa_data.telefono_whatsapp:
+    if empresa_data.telefono_whatsapp and empresa.telefono_whatsapp != empresa_data.telefono_whatsapp:
         telefono_existe = db.query(EmpresaModel).filter(
             EmpresaModel.telefono_whatsapp == empresa_data.telefono_whatsapp,
             EmpresaModel.id != empresa_id
@@ -83,12 +98,10 @@ def actualizar_empresa(
                 detail="Ya existe otra empresa con este número de WhatsApp"
             )
     
-    # Actualizar campos (INCLUYENDO teléfono del dueño)
-    empresa.nombre = empresa_data.nombre
-    empresa.telefono_whatsapp = empresa_data.telefono_whatsapp
-    empresa.prompt_personalizado = empresa_data.prompt_personalizado
-    empresa.telefono_dueño = empresa_data.telefono_dueño  # ← NUEVA LÍNEA
-    empresa.activa = empresa_data.activa
+    # Actualizar solo los campos que vienen en la petición
+    update_data = empresa_data.model_dump(exclude_unset=True)
+    for field, value in update_data.items():
+        setattr(empresa, field, value)
     
     db.commit()
     db.refresh(empresa)

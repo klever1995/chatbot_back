@@ -1,42 +1,43 @@
 import os
-import requests
+import httpx
 from typing import Optional, List, Dict, Any
 
-# Obtener variables de entorno
-WHATSAPP_TOKEN = os.getenv("WHATSAPP_TOKEN")
-WHATSAPP_PHONE_ID = os.getenv("WHATSAPP_PHONE_ID")
-
-# URL base de la API de Meta
-BASE_URL = f"https://graph.facebook.com/v18.0/{WHATSAPP_PHONE_ID}/messages"
-
-def enviar_mensaje_whatsapp(
+async def enviar_mensaje_whatsapp(
     telefono_destino: str,
     mensaje: str,
-    token: Optional[str] = None
+    token: str,
+    phone_number_id: str
 ) -> dict:
     """
-    Envía un mensaje de texto a un número de WhatsApp usando la API de Meta
+    Envía un mensaje de texto a un número de WhatsApp usando la API de Meta (asíncrono)
     
     Args:
         telefono_destino: Número de teléfono del destinatario (con código de país)
         mensaje: Texto del mensaje a enviar
-        token: Token de acceso (opcional, usa el del .env por defecto)
+        token: Token de acceso de la empresa
+        phone_number_id: ID del número de WhatsApp de la empresa
     
     Returns:
         dict: Respuesta de la API de Meta o información del error
     """
-    # Usar token del .env si no se proporciona uno
-    token_usado = token or WHATSAPP_TOKEN
-    
-    if not token_usado:
+    if not token:
         return {
             "exito": False,
-            "error": "No hay token de acceso configurado"
+            "error": "No hay token de acceso configurado para esta empresa"
         }
+    
+    if not phone_number_id:
+        return {
+            "exito": False,
+            "error": "No hay phone_number_id configurado para esta empresa"
+        }
+    
+    # URL base de la API de Meta usando el phone_number_id de la empresa
+    base_url = f"https://graph.facebook.com/v18.0/{phone_number_id}/messages"
     
     # Cabeceras de la petición
     headers = {
-        "Authorization": f"Bearer {token_usado}",
+        "Authorization": f"Bearer {token}",
         "Content-Type": "application/json"
     }
     
@@ -53,15 +54,9 @@ def enviar_mensaje_whatsapp(
     }
     
     try:
-        # Realizar la petición POST a la API de Meta
-        response = requests.post(
-            BASE_URL,
-            headers=headers,
-            json=payload,
-            timeout=10  # Timeout de 10 segundos
-        )
+        async with httpx.AsyncClient(timeout=10) as client:
+            response = await client.post(base_url, headers=headers, json=payload)
         
-        # Verificar si la petición fue exitosa
         if response.status_code == 200 or response.status_code == 201:
             return {
                 "exito": True,
@@ -74,12 +69,12 @@ def enviar_mensaje_whatsapp(
                 "detalles": response.json()
             }
             
-    except requests.exceptions.Timeout:
+    except httpx.TimeoutException:
         return {
             "exito": False,
             "error": "Timeout al conectar con la API de WhatsApp"
         }
-    except requests.exceptions.ConnectionError:
+    except httpx.ConnectError:
         return {
             "exito": False,
             "error": "Error de conexión con la API de WhatsApp"
@@ -90,31 +85,36 @@ def enviar_mensaje_whatsapp(
             "error": f"Error inesperado: {str(e)}"
         }
 
-def enviar_mensaje_con_plantilla(
+async def enviar_mensaje_con_plantilla(
     telefono_destino: str,
     nombre_plantilla: str,
-    componentes: list = [],
-    token: Optional[str] = None
+    token: str,
+    phone_number_id: str,
+    componentes: list = []
 ) -> dict:
     """
-    Envía un mensaje usando una plantilla aprobada (útil para notificaciones)
+    Envía un mensaje usando una plantilla aprobada (útil para notificaciones) - asíncrono
     
     Args:
         telefono_destino: Número de teléfono del destinatario
         nombre_plantilla: Nombre de la plantilla en Meta
+        token: Token de acceso de la empresa
+        phone_number_id: ID del número de WhatsApp de la empresa
         componentes: Componentes de la plantilla (cabecera, cuerpo, botones)
-        token: Token de acceso (opcional)
     
     Returns:
         dict: Respuesta de la API
     """
-    token_usado = token or WHATSAPP_TOKEN
+    if not token:
+        return {"exito": False, "error": "No hay token configurado para esta empresa"}
     
-    if not token_usado:
-        return {"exito": False, "error": "No hay token configurado"}
+    if not phone_number_id:
+        return {"exito": False, "error": "No hay phone_number_id configurado para esta empresa"}
+    
+    base_url = f"https://graph.facebook.com/v18.0/{phone_number_id}/messages"
     
     headers = {
-        "Authorization": f"Bearer {token_usado}",
+        "Authorization": f"Bearer {token}",
         "Content-Type": "application/json"
     }
     
@@ -132,12 +132,8 @@ def enviar_mensaje_con_plantilla(
     }
     
     try:
-        response = requests.post(
-            BASE_URL,
-            headers=headers,
-            json=payload,
-            timeout=10
-        )
+        async with httpx.AsyncClient(timeout=10) as client:
+            response = await client.post(base_url, headers=headers, json=payload)
         
         if response.status_code == 200 or response.status_code == 201:
             return {"exito": True, "data": response.json()}
@@ -147,32 +143,36 @@ def enviar_mensaje_con_plantilla(
     except Exception as e:
         return {"exito": False, "error": f"Error: {str(e)}"}
 
-# ===== NUEVA FUNCIÓN PARA BOTONES INTERACTIVOS =====
-def enviar_mensaje_con_botones(
+async def enviar_mensaje_con_botones(
     telefono_destino: str,
     texto_cabecera: str,
     cliente_id: int,
-    token: Optional[str] = None
+    token: str,
+    phone_number_id: str
 ) -> dict:
     """
-    Envía un mensaje con botones interactivos de aprobar/rechazar
+    Envía un mensaje con botones interactivos de aprobar/rechazar - asíncrono
     
     Args:
         telefono_destino: Número del destinatario (dueño)
         texto_cabecera: Texto informativo sobre el cliente/comprobante
         cliente_id: ID del cliente para incluir en el callback_data
-        token: Token de acceso (opcional)
+        token: Token de acceso de la empresa
+        phone_number_id: ID del número de WhatsApp de la empresa
     
     Returns:
         dict: Respuesta de la API
     """
-    token_usado = token or WHATSAPP_TOKEN
+    if not token:
+        return {"exito": False, "error": "No hay token configurado para esta empresa"}
     
-    if not token_usado:
-        return {"exito": False, "error": "No hay token configurado"}
+    if not phone_number_id:
+        return {"exito": False, "error": "No hay phone_number_id configurado para esta empresa"}
+    
+    base_url = f"https://graph.facebook.com/v18.0/{phone_number_id}/messages"
     
     headers = {
-        "Authorization": f"Bearer {token_usado}",
+        "Authorization": f"Bearer {token}",
         "Content-Type": "application/json"
     }
     
@@ -209,21 +209,17 @@ def enviar_mensaje_con_botones(
     }
     
     try:
-        response = requests.post(
-            BASE_URL,
-            headers=headers,
-            json=payload,
-            timeout=10
-        )
+        async with httpx.AsyncClient(timeout=10) as client:
+            response = await client.post(base_url, headers=headers, json=payload)
         
         if response.status_code == 200 or response.status_code == 201:
             return {"exito": True, "data": response.json()}
         else:
             return {"exito": False, "error": f"Error {response.status_code}", "detalles": response.json()}
             
-    except requests.exceptions.Timeout:
+    except httpx.TimeoutException:
         return {"exito": False, "error": "Timeout al conectar con la API de WhatsApp"}
-    except requests.exceptions.ConnectionError:
+    except httpx.ConnectError:
         return {"exito": False, "error": "Error de conexión con la API de WhatsApp"}
     except Exception as e:
         return {"exito": False, "error": f"Error inesperado: {str(e)}"}

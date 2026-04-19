@@ -19,3 +19,4 @@ email-validator
 python-socketio
 google-auth
 pydantic-settings
+google-generativeai
