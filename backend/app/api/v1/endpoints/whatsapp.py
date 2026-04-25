@@ -3,18 +3,19 @@ from sqlalchemy.orm import Session
 import os
 import datetime
 import requests
+import re
+import json
 from groq import Groq
 from app.db.base import get_db
 from app.models.empresa import Empresa
 from app.models.cliente import Cliente
 from app.models.documento import Documento
-from app.models.ventas import Venta, EstadoVenta
 from app.models.conversacion import Conversacion, TipoEmisor
-from app.services.rag import RAGService
-from app.services.memoria import MemoriaService
 from app.services.cloudinary import subir_imagen_desde_bytes
 from app.services.whatsapp_sender import enviar_mensaje_whatsapp, enviar_mensaje_con_botones
-from app.socket_manager import emitir_nueva_venta
+from app.handlers.venta_unica_handler import procesar_mensaje_venta_unica, procesar_comprobante_venta_unica, aprobar_venta_unica
+from app.handlers.pedido_handler import responder_pregunta_restaurante, procesar_comprobante_pedido, aprobar_pedido
+from app.handlers.informativo_handler import responder_pregunta_informativo
 
 router = APIRouter(prefix="/whatsapp", tags=["whatsapp"])
 
@@ -49,14 +50,18 @@ async def webhook_whatsapp(request: Request, db: Session = Depends(get_db)):
     """
     try:
         body = await request.json()
-        print("📩 Mensaje recibido:", body)
+        # Comentado para limpiar la terminal: print("📩 Mensaje recibido:", body)
         
         entry = body.get("entry", [{}])[0]
         changes = entry.get("changes", [{}])[0]
         value = changes.get("value", {})
         messages = value.get("messages", [])
         
+        # 🔥 NUEVO: Ignorar webhooks que no contengan mensajes de usuario (solo statuses)
         if not messages:
+            # Verificar si hay statuses para no imprimir innecesariamente
+            if "statuses" not in value:
+                print("📩 Webhook sin mensajes ni statuses")
             return {"status": "ok", "message": "Sin mensajes"}
         
         msg = messages[0]
@@ -146,7 +151,6 @@ async def webhook_whatsapp(request: Request, db: Session = Depends(get_db)):
             
             elif "campaña=" in texto_mensaje:
                 print("✅ ¡Contiene 'campaña='!")
-                import re
                 match = re.search(r'campaña=(\w+)', texto_mensaje)
                 if match:
                     campania_detectada = match.group(1).strip().lower()
@@ -187,109 +191,34 @@ async def webhook_whatsapp(request: Request, db: Session = Depends(get_db)):
                     ).first()
                     
                     if cliente_pendiente and cliente_pendiente.datos_estructurados:
-                        datos = cliente_pendiente.datos_estructurados
-                        if datos.get("ultimo_comprobante", {}).get("estado_pago") == "pendiente":
-                            
-                            if accion == "APROBAR":
-                                datos["ultimo_comprobante"]["estado_pago"] = "confirmado"
-                                datos["ultimo_comprobante"]["fecha_confirmacion"] = str(datetime.datetime.now())
-                                
-                                mensaje_confirmacion = "✅ ¡Buenas noticias! Tu pago ha sido verificado y ya tienes acceso al curso. 😊"
-                                await enviar_mensaje_whatsapp(
-                                    telefono_destino=cliente_pendiente.telefono,
-                                    mensaje=mensaje_confirmacion,
-                                    token=whatsapp_token,
-                                    phone_number_id=phone_number_id
-                                )
-                                
-                                campania_cliente = None
-                                if cliente_pendiente.datos_estructurados:
-                                    campania_cliente = cliente_pendiente.datos_estructurados.get("campania_activa")
-                                
-                                print(f"📦 Buscando mensaje de entrega para campaña: {campania_cliente}")
-                                
-                                documento = db.query(Documento).filter(
-                                    Documento.empresa_id == empresa.id,
-                                    Documento.campania_id == campania_cliente
-                                ).first()
-                                
-                                if documento and documento.mensaje_entrega:
-                                    mensaje_material = documento.mensaje_entrega
-                                    print(f"📦 Mensaje de entrega obtenido desde BD para campaña {campania_cliente}")
-                                    
-                                    cantidad = 1
-                                    precio_unitario = documento.precio if documento.precio else 0
-                                    monto_total = cantidad * precio_unitario
-                                    estado_valor = "confirmada"
-
-                                    nueva_venta = Venta(
-                                        empresa_id=empresa.id,
-                                        cliente_id=cliente_pendiente.id,
-                                        campania_id=campania_cliente,
-                                        producto_nombre=documento.nombre.replace('.pdf', ''),
-                                        cantidad=cantidad,
-                                        precio_unitario=precio_unitario,
-                                        monto_total=monto_total,
-                                        estado=estado_valor,
-                                        comprobante_url=datos.get("ultimo_comprobante", {}).get("url"),
-                                        notas=f"Venta aprobada el {datetime.datetime.now()}"
-                                    )
-                                    db.add(nueva_venta)
-                                    db.commit()
-                                    db.refresh(nueva_venta)
-                                    
-                                    venta_dict = {
-                                        "id": nueva_venta.id,
-                                        "empresa_id": nueva_venta.empresa_id,
-                                        "cliente_id": nueva_venta.cliente_id,
-                                        "cliente_nombre": cliente_pendiente.nombre,
-                                        "cliente_telefono": cliente_pendiente.telefono,
-                                        "campania_id": nueva_venta.campania_id,
-                                        "producto_nombre": nueva_venta.producto_nombre,
-                                        "cantidad": nueva_venta.cantidad,
-                                        "precio_unitario": nueva_venta.precio_unitario,
-                                        "monto_total": nueva_venta.monto_total,
-                                        "estado": nueva_venta.estado,
-                                        "comprobante_url": nueva_venta.comprobante_url,
-                                        "notas": nueva_venta.notas,
-                                        "fecha_venta": nueva_venta.fecha_venta.isoformat() if nueva_venta.fecha_venta else None,
-                                        "fecha_actualizacion": nueva_venta.fecha_actualizacion.isoformat() if nueva_venta.fecha_actualizacion else None
-                                    }
-                                    await emitir_nueva_venta(venta_dict, empresa.id)
-                                    print(f"📡 Evento WebSocket emitido para venta ID: {nueva_venta.id}")
-                                    print(f"💰 Venta registrada: {campania_cliente} - ${monto_total}")
-                                    
+                        # Determinar si es pedido múltiple o venta única
+                        campania_cliente = cliente_pendiente.datos_estructurados.get("campania_activa")
+                        es_restaurante = False
+                        if campania_cliente:
+                            doc_campania = db.query(Documento).filter(
+                                Documento.empresa_id == empresa.id,
+                                Documento.campania_id == campania_cliente
+                            ).first()
+                            if doc_campania and doc_campania.tipo_campania == "pedido_multiple":
+                                es_restaurante = True
+                        
+                        if es_restaurante:
+                            # Aprobar pedido múltiple
+                            await aprobar_pedido(db, empresa, cliente_pendiente, accion, whatsapp_token, phone_number_id)
+                        else:
+                            # Aprobar venta única
+                            datos = cliente_pendiente.datos_estructurados
+                            if datos.get("ultimo_comprobante", {}).get("estado_pago") == "pendiente":
+                                if accion == "APROBAR":
+                                    await aprobar_venta_unica(db, empresa, cliente_pendiente, "APROBAR", whatsapp_token, phone_number_id)
                                 else:
-                                    print(f"⚠️ No se encontró mensaje de entrega para campaña {campania_cliente}, usando legacy")
-                                    rag_temp = RAGService(db, empresa.id, cliente_pendiente.id, campania_cliente)
-                                    mensaje_material = rag_temp.obtener_mensaje_entrega_legacy(campania_cliente)
-                                
-                                await enviar_mensaje_whatsapp(
-                                    telefono_destino=cliente_pendiente.telefono,
-                                    mensaje=mensaje_material,
-                                    token=whatsapp_token,
-                                    phone_number_id=phone_number_id
-                                )
-                                
-                            else:  # RECHAZAR
-                                datos["ultimo_comprobante"]["estado_pago"] = "rechazado"
-                                datos["ultimo_comprobante"]["fecha_rechazo"] = str(datetime.datetime.now())
-                                mensaje_rechazo = "❌ Hubo un problema con tu comprobante. Por favor, contacta a un asesor para más detalles."
-                                await enviar_mensaje_whatsapp(
-                                    telefono_destino=cliente_pendiente.telefono,
-                                    mensaje=mensaje_rechazo,
-                                    token=whatsapp_token,
-                                    phone_number_id=phone_number_id
-                                )
-                            
-                            cliente_pendiente.datos_estructurados = datos
-                            db.commit()
-                            
-                            return {"status": "ok", "message": f"Pago {accion} para cliente {cliente_id}"}
+                                    await aprobar_venta_unica(db, empresa, cliente_pendiente, "RECHAZAR", whatsapp_token, phone_number_id)
+                        
+                        return {"status": "ok", "message": f"Pago {accion} para cliente {cliente_id}"}
             
             return {"status": "ok", "message": "Formato no reconocido o cliente sin pago pendiente"}
         
-        # Guardar/Actualizar cliente con campaña
+        # Guardar/Actualizar cliente con campaña y limpiar historial
         if not cliente:
             datos_iniciales = {}
             if campania_detectada:
@@ -323,6 +252,7 @@ async def webhook_whatsapp(request: Request, db: Session = Depends(get_db)):
                 datos["campania_activa"] = campania_detectada
                 cliente.datos_estructurados = datos
                 
+                # 🔥 LIMPIAR HISTORIAL PARA PEDIDOS MÚLTIPLES TAMBIÉN (igual que ventas individuales)
                 conversaciones_eliminadas = db.query(Conversacion).filter(
                     Conversacion.cliente_id == cliente.id
                 ).delete(synchronize_session=False)
@@ -345,6 +275,23 @@ async def webhook_whatsapp(request: Request, db: Session = Depends(get_db)):
             except Exception as e:
                 print(f"❌ Error procesando audio: {e}")
                 texto_mensaje = "🎤 [Error al procesar el audio]"
+        
+        # Verificar el tipo de campaña del documento
+        campania_activa = None
+        if cliente.datos_estructurados:
+            campania_activa = cliente.datos_estructurados.get("campania_activa")
+        
+        tipo_campania = "producto_unico"  # valor por defecto
+        if campania_activa:
+            documento_campania = db.query(Documento).filter(
+                Documento.empresa_id == empresa.id,
+                Documento.campania_id == campania_activa
+            ).first()
+            if documento_campania:
+                tipo_campania = documento_campania.tipo_campania or "producto_unico"
+        
+        es_restaurante = (tipo_campania == "pedido_multiple")
+        es_informativo = (tipo_campania == "informativo")
         
         # Procesar imagen (comprobante)
         url_comprobante = None
@@ -370,30 +317,78 @@ async def webhook_whatsapp(request: Request, db: Session = Depends(get_db)):
                     
                     if resultado_cloudinary:
                         url_comprobante = resultado_cloudinary["url"]
-                        datos_cliente = cliente.datos_estructurados or {}
-                        datos_cliente["ultimo_comprobante"] = {
-                            "url": url_comprobante,
-                            "fecha": str(datetime.datetime.now()),
-                            "estado_pago": "pendiente",
-                            "tipo": imagen_info["mime_type"]
-                        }
-                        cliente.datos_estructurados = datos_cliente
-                        db.commit()
                         
-                        if empresa.telefono_dueño:
-                            texto_cabecera = (
-                                f"🔔 *NUEVO COMPROBANTE*\n\n"
-                                f"*Cliente:* {cliente.nombre or 'Desconocido'}\n"
-                                f"*Teléfono:* {cliente.telefono}\n"
-                                f"*Comprobante:* {url_comprobante}"
+                        if es_restaurante:
+                            print(f"\n🔍🔍🔍 DEBUG INICIO - PROCESAMIENTO COMPROBANTE RESTAURANTE 🔍🔍🔍")
+                            print(f"🔍 DEBUG: cliente.id = {cliente.id}")
+                            print(f"🔍 DEBUG: campania_activa = {campania_activa}")
+                            print(f"🔍 DEBUG: empresa.id = {empresa.id}")
+                            
+                            # Obtener TODOS los mensajes de la conversación (cliente y bot) desde que se activó la campaña
+                            mensajes_conversacion = db.query(Conversacion).filter(
+                                Conversacion.cliente_id == cliente.id
+                            ).order_by(Conversacion.timestamp.asc()).all()
+                            
+                            print(f"🔍 DEBUG: mensajes_conversacion encontrados = {len(mensajes_conversacion)}")
+                            for i, m in enumerate(mensajes_conversacion):
+                                print(f"  DEBUG mensaje {i+1}: emisor={m.emisor.value}, texto={m.mensaje[:100]}")
+                            
+                            # Unir todos los mensajes en un solo texto con el formato "Cliente: ..." o "Bot: ..."
+                            historial_completo = "\n".join([f"{'Cliente' if msg.emisor == TipoEmisor.CLIENTE else 'Bot'}: {msg.mensaje}" for msg in mensajes_conversacion])
+                            
+                            print(f"🔍 DEBUG: historial_completo LENGTH = {len(historial_completo)} caracteres")
+                            print(f"🔍 DEBUG: historial_completo CONTENIDO:\n{historial_completo}")
+                            
+                            # Usar LLM para extraer el pedido y el total del historial completo
+                            from openai import OpenAI
+                            client_openai = OpenAI(api_key=empresa.openai_api_key)
+                            
+                            prompt_extractor = f"""
+                            Extrae el pedido y el monto total de la siguiente conversación entre el cliente y el bot:
+                            
+                            {historial_completo}
+                            
+                            Devuelve SOLO un JSON con esta estructura:
+                            {{
+                                "texto_pedido": "resumen del pedido",
+                                "monto_total": numero
+                            }}
+                            
+                            Si no hay un pedido claro, devuelve monto_total 0.
+                            """
+                            
+                            print(f"🔍 DEBUG: prompt_extractor (primeros 500 chars): {prompt_extractor[:500]}...")
+                            
+                            respuesta_llm = client_openai.chat.completions.create(
+                                model=empresa.openai_chat_model or "gpt-4o",
+                                messages=[{"role": "user", "content": prompt_extractor}],
+                                temperature=0.2
                             )
-                            await enviar_mensaje_con_botones(
-                                telefono_destino=empresa.telefono_dueño,
-                                texto_cabecera=texto_cabecera,
-                                cliente_id=cliente.id,
-                                token=whatsapp_token,
-                                phone_number_id=phone_number_id
+                            
+                            contenido = respuesta_llm.choices[0].message.content
+                            print(f"🔍 DEBUG: respuesta_llm RAW = {contenido}")
+                            
+                            contenido = re.sub(r'```json\n?', '', contenido)
+                            contenido = re.sub(r'```\n?', '', contenido)
+                            
+                            try:
+                                datos_pedido = json.loads(contenido)
+                                texto_pedido = datos_pedido.get("texto_pedido", "No se pudo determinar el pedido")
+                                monto_total = float(datos_pedido.get("monto_total", 0))
+                                print(f"🔍 DEBUG: texto_pedido extraído = {texto_pedido}")
+                                print(f"🔍 DEBUG: monto_total extraído = {monto_total}")
+                            except Exception as e:
+                                print(f"🔍 DEBUG: ERROR parseando JSON: {e}")
+                                texto_pedido = "No se pudo determinar el pedido"
+                                monto_total = 0
+                            
+                            print(f"🔍🔍🔍 DEBUG FIN - llamando a procesar_comprobante_pedido 🔍🔍🔍")
+                            
+                            await procesar_comprobante_pedido(
+                                db, empresa, cliente, url_comprobante, imagen_info, texto_pedido, monto_total, whatsapp_token, phone_number_id
                             )
+                        else:
+                            await procesar_comprobante_venta_unica(db, empresa, cliente, url_comprobante, imagen_info, whatsapp_token, phone_number_id)
                 else:
                     print(f"❌ Falló descarga de Meta: {response.status_code}")
                         
@@ -414,69 +409,25 @@ async def webhook_whatsapp(request: Request, db: Session = Depends(get_db)):
             print("⏸️ No hay mensaje de texto, esperando siguiente interacción")
             return {"status": "ok", "message": "Parámetro de campaña recibido, esperando mensaje del cliente"}
         
-        # Verificar campaña antes de RAG
-        campania_activa = None
-        if cliente.datos_estructurados:
-            campania_activa = cliente.datos_estructurados.get("campania_activa")
-            print(f"🎯 CAMPAÑA ACTIVA PARA RAG: '{campania_activa}'")
-            
-            if not campania_activa:
-                print("⚠️ Cliente sin campaña activa. Usando fallback.")
+        # Redirigir según el tipo de campaña
+        if es_informativo:
+            # Documento informativo: solo responde preguntas usando RAG
+            await responder_pregunta_informativo(
+                db, empresa, cliente, texto_mensaje, campania_activa, whatsapp_token, phone_number_id
+            )
+        elif es_restaurante and not imagen_info:
+            # Pedido múltiple: solo responde preguntas si no es una imagen
+            await responder_pregunta_restaurante(
+                db, empresa, cliente, texto_mensaje, campania_activa, whatsapp_token, phone_number_id
+            )
+        elif es_restaurante and imagen_info:
+            # Ya se procesó el comprobante, no hacemos nada más
+            print("📷 Comprobante ya procesado, no se envía respuesta adicional")
         else:
-            print("⚠️ No hay datos_estructurados en cliente")
-        
-        # Inicializar servicios
-        rag = RAGService(
-            db=db, 
-            empresa_id=empresa.id, 
-            cliente_id=cliente.id,
-            campania_id=campania_activa
-        )
-        memoria = MemoriaService(db, cliente.id)
-        
-        # Buscar documentos
-        print(f"🔍 Buscando documentos para: '{texto_mensaje}' con campaña '{campania_activa}'")
-        resumen_cliente = memoria.obtener_resumen()
-        documentos_relevantes = rag.buscar_similares(texto_mensaje, top_k=3)
-        
-        print(f"📚 Documentos encontrados: {len(documentos_relevantes)}")
-        for i, doc in enumerate(documentos_relevantes):
-            print(f"  {i+1}. Documento: {doc.get('documento', 'N/A')} - Similitud: {doc.get('similitud', 0):.4f}")
-            print(f"     Texto: {doc.get('texto', '')[:100]}...")
-        
-        contexto = "\n\n".join([doc["texto"] for doc in documentos_relevantes])
-        
-        respuesta_texto = rag.generar_respuesta_llm(
-            consulta=texto_mensaje,
-            contexto=contexto,
-            resumen_cliente=resumen_cliente
-        )
-        
-        if imagen_info:
-            respuesta_texto = "✅ ¡Gracias por enviar tu comprobante! Hemos notificado al asesor. En breve recibirás la confirmación. 😊"
-        elif audio_url:
-            respuesta_texto = f"🎤 He recibido tu audio. {respuesta_texto}"
-        
-        # Guardar respuesta del bot
-        mensaje_bot = Conversacion(
-            cliente_id=cliente.id,
-            mensaje=respuesta_texto,
-            emisor=TipoEmisor.BOT
-        )
-        db.add(mensaje_bot)
-        db.commit()
-        
-        # Enviar respuesta al cliente
-        resultado = await enviar_mensaje_whatsapp(
-            telefono_destino=telefono_cliente,
-            mensaje=respuesta_texto,
-            token=whatsapp_token,
-            phone_number_id=phone_number_id
-        )
-        print(f"📤 RESULTADO ENVÍO: {resultado}")
-        
-        # Actualizar memoria
-        memoria.actualizar_resumen(texto_mensaje, respuesta_texto)
+            # Producto único: flujo normal de venta individual
+            await procesar_mensaje_venta_unica(
+                db, empresa, cliente, texto_mensaje, imagen_info, audio_url, campania_activa, whatsapp_token, phone_number_id
+            )
         
         return {"status": "ok", "cliente_id": cliente.id}
         
@@ -496,8 +447,6 @@ async def verificar_webhook(request: Request):
     token = params.get("hub.verify_token")
     challenge = params.get("hub.challenge")
     
-    # Nota: El verify_token también debería venir de la empresa, pero este endpoint es solo para verificación inicial
-    # Puedes usar un token global para la verificación inicial
     verify_token = os.getenv("WHATSAPP_VERIFY_TOKEN", "mi_token_secreto")
     
     if mode == "subscribe" and token == verify_token:

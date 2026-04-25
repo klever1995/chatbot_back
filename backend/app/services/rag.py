@@ -115,7 +115,7 @@ class RAGService:
         
         return respuesta.choices[0].message.content
     
-    def guardar_documento(self, nombre_archivo: str, contenido_bytes: bytes, campania_id: Optional[str] = None, mensaje_entrega: Optional[str] = None, precio: Optional[float] = None):
+    def guardar_documento(self, nombre_archivo: str, contenido_bytes: bytes, campania_id: Optional[str] = None, mensaje_entrega: Optional[str] = None, precio: Optional[float] = None, tipo_campania: Optional[str] = "producto_unico"):
         """Procesa y guarda un documento en la base de datos vectorial"""
         from app.models.documento import Documento, ChunkDocumento
         import re
@@ -137,6 +137,10 @@ class RAGService:
                 campania_id = f"campania_{codigo_corto}"
             print(f"🔑 Campaña generada automáticamente en RAG: {campania_id}")
         
+        # Validar tipo_campania
+        if tipo_campania not in ["producto_unico", "pedido_multiple", "informativo"]:
+            tipo_campania = "producto_unico"
+        
         # Extraer texto
         texto = self.extraer_texto_pdf(contenido_bytes)
         
@@ -147,7 +151,8 @@ class RAGService:
             hash_contenido=hashlib.md5(contenido_bytes).hexdigest(),
             campania_id=campania_id,
             mensaje_entrega=mensaje_entrega,
-            precio=precio
+            precio=precio,
+            tipo_campania=tipo_campania  # 🔥 NUEVO CAMPO
         )
         self.db.add(doc)
         self.db.flush()

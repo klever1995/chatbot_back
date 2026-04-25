@@ -1,4 +1,4 @@
-from sqlalchemy import Column, Integer, String, DateTime, Text, ForeignKey, Float  # 🔥 AÑADÍ Float
+from sqlalchemy import Column, Integer, String, DateTime, Text, ForeignKey, Float
 from sqlalchemy.sql import func
 from sqlalchemy.orm import relationship
 from app.db.base import Base
@@ -14,10 +14,12 @@ class Documento(Base):
     nombre = Column(String(255), nullable=False)
     hash_contenido = Column(String(64), unique=True)
     fecha_subida = Column(DateTime(timezone=True), server_default=func.now())
-    # 🔥 Mensaje de entrega del producto
+    # Mensaje de entrega del producto
     mensaje_entrega = Column(Text, nullable=True)
-    # 🔥 NUEVO CAMPO: Precio del producto (para registrar ventas)
+    # Precio del producto (para registrar ventas)
     precio = Column(Float, nullable=True)  # Ej: 3.00, 2.50, etc.
+    # Tipo de campaña: "producto_unico" (flujo actual) o "pedido_multiple" (restaurante/tienda)
+    tipo_campania = Column(String(50), nullable=False, default="producto_unico")
     
     # Relaciones
     empresa = relationship("Empresa", backref="documentos")

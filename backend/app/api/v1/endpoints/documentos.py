@@ -17,7 +17,8 @@ async def subir_documento(
     archivo: UploadFile = File(...),
     campania_id: Optional[str] = Form(None),
     mensaje_entrega: Optional[str] = Form(None),
-    precio: Optional[float] = Form(None),  # 🔥 NUEVO: Precio del producto
+    precio: Optional[float] = Form(None),
+    tipo_campania: Optional[str] = Form(default="producto_unico"),  # 🔥 NUEVO: producto_unico, pedido_multiple o informativo
     db: Session = Depends(get_db)
 ):
     # Verificar que la empresa existe
@@ -35,6 +36,13 @@ async def subir_documento(
             detail="Solo se permiten archivos PDF u ODF"
         )
     
+    # Validar tipo_campania (ahora incluye 'informativo')
+    if tipo_campania not in ["producto_unico", "pedido_multiple", "informativo"]:
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail="tipo_campania debe ser 'producto_unico', 'pedido_multiple' o 'informativo'"
+        )
+    
     try:
         # Leer contenido del archivo
         contenido = await archivo.read()
@@ -46,7 +54,8 @@ async def subir_documento(
             contenido, 
             campania_id,
             mensaje_entrega,
-            precio  # 🔥 Pasar el precio
+            precio,
+            tipo_campania  # 🔥 Pasar tipo_campania
         )
         
         return {
@@ -55,7 +64,8 @@ async def subir_documento(
             "nombre": documento.nombre,
             "campania_id": documento.campania_id,
             "mensaje_entrega": documento.mensaje_entrega,
-            "precio": documento.precio,  # 🔥 Incluir en respuesta
+            "precio": documento.precio,
+            "tipo_campania": documento.tipo_campania,  # 🔥 Incluir en respuesta
             "chunks": len(documento.chunks) if documento.chunks else 0
         }
     
@@ -83,7 +93,8 @@ def listar_documentos(
             "fecha_subida": doc.fecha_subida,
             "campania_id": doc.campania_id,
             "mensaje_entrega": doc.mensaje_entrega,
-            "precio": doc.precio,  # 🔥 Mostrar precio
+            "precio": doc.precio,
+            "tipo_campania": doc.tipo_campania,  # 🔥 Mostrar tipo_campania
             "total_chunks": len(doc.chunks) if doc.chunks else 0
         }
         for doc in documentos
@@ -107,7 +118,8 @@ def obtener_documento(
         "nombre": documento.nombre,
         "campania_id": documento.campania_id,
         "mensaje_entrega": documento.mensaje_entrega,
-        "precio": documento.precio,  # 🔥 Incluir precio
+        "precio": documento.precio,
+        "tipo_campania": documento.tipo_campania,  # 🔥 Incluir tipo_campania
         "fecha_subida": documento.fecha_subida,
         "total_chunks": len(documento.chunks) if documento.chunks else 0,
         "chunks": [
@@ -142,7 +154,8 @@ def actualizar_campania_documento(
         "documento_id": documento.id,
         "campania_id": documento.campania_id,
         "mensaje_entrega": documento.mensaje_entrega,
-        "precio": documento.precio  # 🔥 Incluir precio
+        "precio": documento.precio,
+        "tipo_campania": documento.tipo_campania  # 🔥 Incluir tipo_campania
     }
 
 @router.put("/{documento_id}/mensaje")
@@ -167,13 +180,14 @@ def actualizar_mensaje_entrega(
         "mensaje": "Mensaje de entrega actualizado correctamente",
         "documento_id": documento.id,
         "mensaje_entrega": documento.mensaje_entrega,
-        "precio": documento.precio  # 🔥 Incluir precio
+        "precio": documento.precio,
+        "tipo_campania": documento.tipo_campania  # 🔥 Incluir tipo_campania
     }
 
 @router.put("/{documento_id}/precio")
 def actualizar_precio_documento(
     documento_id: int,
-    precio: float = Form(...),  # 🔥 NUEVO: Endpoint para actualizar solo el precio
+    precio: float = Form(...),
     db: Session = Depends(get_db)
 ):
     """Actualizar el precio de un documento existente"""
@@ -192,7 +206,38 @@ def actualizar_precio_documento(
         "mensaje": "Precio actualizado correctamente",
         "documento_id": documento.id,
         "precio": documento.precio,
-        "campania_id": documento.campania_id
+        "campania_id": documento.campania_id,
+        "tipo_campania": documento.tipo_campania  # 🔥 Incluir tipo_campania
+    }
+
+@router.put("/{documento_id}/tipo-campania")
+def actualizar_tipo_campania(
+    documento_id: int,
+    tipo_campania: str = Form(...),
+    db: Session = Depends(get_db)
+):
+    """Actualizar el tipo de campaña de un documento (producto_unico, pedido_multiple o informativo)"""
+    if tipo_campania not in ["producto_unico", "pedido_multiple", "informativo"]:
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail="tipo_campania debe ser 'producto_unico', 'pedido_multiple' o 'informativo'"
+        )
+    
+    documento = db.query(Documento).filter(Documento.id == documento_id).first()
+    if not documento:
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail="Documento no encontrado"
+        )
+    
+    documento.tipo_campania = tipo_campania
+    db.commit()
+    db.refresh(documento)
+    
+    return {
+        "mensaje": "Tipo de campaña actualizado correctamente",
+        "documento_id": documento.id,
+        "tipo_campania": documento.tipo_campania
     }
 
 @router.delete("/{documento_id}")

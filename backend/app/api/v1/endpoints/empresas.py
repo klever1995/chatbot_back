@@ -107,3 +107,26 @@ def actualizar_empresa(
     db.refresh(empresa)
     
     return empresa
+
+@router.delete("/{empresa_id}", status_code=status.HTTP_200_OK)
+def eliminar_empresa(
+    empresa_id: int,
+    db: Session = Depends(get_db)
+):
+    """
+    Elimina una empresa existente y todos sus datos relacionados (cascada)
+    """
+    # Buscar la empresa
+    empresa = db.query(EmpresaModel).filter(EmpresaModel.id == empresa_id).first()
+    
+    if not empresa:
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail="Empresa no encontrada"
+        )
+    
+    # Eliminar la empresa (las relaciones con CASCADE eliminarán documentos, chunks, etc.)
+    db.delete(empresa)
+    db.commit()
+    
+    return {"mensaje": f"Empresa {empresa_id} eliminada correctamente"}
